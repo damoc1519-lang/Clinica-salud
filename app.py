@@ -59,7 +59,6 @@ def init_db():
         )
     """)
   
-  # Verificación de seguridad para columnas nuevas en BD existentes
   cursor.execute("PRAGMA table_info(pacientes)")
   p_cols = [col[1] for col in cursor.fetchall()]
   if "origen" not in p_cols:
@@ -75,11 +74,37 @@ def init_db():
 
 init_db()
 
+# --- DICCIONARIO DE MÉDICOS Y ESPECIALIDADES ---
+MEDICOS_ESPECIALIDADES = {
+    "Alergología": ["Dra. Kanie Collado"],
+    "Anestesiología": ["Dr. Norberto Carballosa"],
+    "Cardiología": ["Dra. Lisset Alfonso"],
+    "Dermatología": ["Dr. Miguel Mederos"],
+    "Endocrinología": ["Dr. Frank Medina", "Dr. Miguel Marrero", "Dra. Gabriela Vélez"],
+    "Fisiatría": ["Dr. Pavel Mili", "Dr. Yunio Torres"],
+    "Gastroenterología": ["Dr. Frank Pérez"],
+    "Geriatría": ["Dra. Mildred"],
+    "Ginecología": ["Dr. Alejandro Argiz", "Dra. Marilyn Martínez"],
+    "Logopedia": ["Dra. Osmarie Barbosa"],
+    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dra. Osmarie Barbosa"],
+    "Medicina Interna": ["Dr. Ovadiz Pérez"],
+    "Neumología": ["Dra. Eva Barbosa"],
+    "Neurología": ["Dr. Dayron Douglas Calvo"],
+    "Nutrición": ["Lcdo. Andrés Hidrobo"],
+    "Otorrinolaringología": ["Dr. Fernando Enríquez"],
+    "Pediatría": ["Dra. Ailicec Arias", "Dra. María Cristina Torres"],
+    "Psicología": ["Lcdo. Jerson Rodríguez"],
+    "Psiquiatría": ["Dra. Yulca Rosales"],
+    "Reumatología": ["Dr. Dennis Pucha", "Dr. Rafael Echavarría"],
+    "Traumatología": ["Dr. Antonio Leal"],
+    "Urología": ["Dr. William Fonseca"]
+}
+
 # --- SISTEMA DE AUTENTICACIÓN POR ROLES ---
 USERS = {
-    "Secretaria (Recepción)": {"pass": "sec2026", "role": "secretaria"},
-    "Dr. Pérez (Medicina General)": {"pass": "med123", "role": "medico"},
-    "Dra. Gómez (Pediatría)": {"pass": "med456", "role": "medico"},
+    "Abigail Ruiz (Secretaria)": {"pass": "sec2026", "role": "secretaria"},
+    "Dr. Yoandis Pérez (Medicina General)": {"pass": "med123", "role": "medico"},
+    "Dra. Ailicec Arias (Pediatría / Med. General)": {"pass": "med456", "role": "medico"},
     "Administrador": {"pass": "admin2026", "role": "admin"}
 }
 
@@ -163,23 +188,16 @@ elif choice == "📋 Listado de Pacientes":
   conn.close()
 
   if pacientes_raw:
-    # Construir tabla calculando el conteo de visitas y asignando C1 o SUB en tiempo real
     data_tabla = []
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
 
     for p in pacientes_raw:
       p_id, cedula, nombre, telefono, f_nac, origen = p
-      
-      # Contar cuántas veces ha asistido al historial
       cursor.execute("SELECT COUNT(*) FROM historial WHERE cedula_paciente = ?", (cedula,))
       total_visitas = cursor.fetchone()[0]
       
-      # Lógica de código automática
-      if total_visitas == 0:
-        codigo_actual = "C1"
-      else:
-        codigo_actual = "SUB"
+      codigo_actual = "C1" if total_visitas == 0 else "SUB"
 
       data_tabla.append({
           "Cédula": cedula,
@@ -196,7 +214,6 @@ elif choice == "📋 Listado de Pacientes":
 
     st.dataframe(df_p, use_container_width=True)
     
-    # Botón para descargar el listado completo con códigos y conteo en Excel
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
       df_p.to_excel(writer, sheet_name='Reporte_Pacientes', index=False)
@@ -211,7 +228,6 @@ elif choice == "📋 Listado de Pacientes":
 
     st.divider()
     
-    # Sección para eliminar pacientes por error
     if role in ["secretaria", "admin"]:
       with st.expander("🗑️ Eliminar Paciente (Corrección por Error)"):
         st.warning("⚠️ Atención: Al eliminar un paciente, también se borrarán sus citas e historial clínico asociado.")
@@ -237,7 +253,7 @@ elif choice == "📋 Listado de Pacientes":
   else:
     st.info("No hay pacientes registrados en el sistema.")
 
-# --- MÓDULO: AGENDA Y CITAS ---
+# --- MÓDULO: AGENDA Y CITAS CON VERIFICACIÓN DE OCUPADO ---
 elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
   st.subheader("Agenda Médica Virtual - Medisuport")
   
@@ -250,7 +266,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
     pacientes_dict = {f"{p[1]} (Cédula: {p[0]})": p[0] for p in pacientes}
 
     with st.form("form_cita"):
-      st.write("Agendar Nueva Cita")
+      st.write("Agendar Nueva Cita (Verificación automática de disponibilidad)")
       if pacientes_dict:
         paciente_sel = st.selectbox("Seleccionar Paciente", list(pacientes_dict.keys()))
         cedula_act = pacientes_dict[paciente_sel]
@@ -258,35 +274,71 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
         st.warning("Debe registrar pacientes primero.")
         cedula_act = ""
 
-      fecha = st.date_input("Fecha de la Cita", datetime.now())
-      hora = st.time_input("Hora de la Cita")
-      medico = st.selectbox("Médico Asignado", ["Dr. Pérez (Medicina General)", "Dra. Gómez (Pediatría)"])
-      especialidad = st.selectbox("Especialidad", ["Medicina General", "Pediatría"])
+      # Selección de Especialidad y Médico según el reporte institucional
+      especialidad_sel = st.selectbox("Especialidad Médica", list(MEDICOS_ESPECIALIDADES.keys()))
+      medicos_disponibles = MEDICOS_ESPECIALIDADES[especialidad_sel]
+      medico_sel = st.selectbox("Médico Tratante", medicos_disponibles)
+
+      col1, col2 = st.columns(2)
+      with col1:
+        fecha_cita = st.date_input("Fecha de la Cita", datetime.now())
+      with col2:
+        hora_cita = st.time_input("Hora de la Cita")
 
       submitted = st.form_submit_button("Agendar Cita")
+      
       if submitted and cedula_act:
+        str_fecha = str(fecha_cita)
+        str_hora = str(hora_cita)
+        
+        # VERIFICAR SI EL MÉDICO YA TIENE OCUPADO ESE HORARIO
         conn = sqlite3.connect("clinica.db", check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO citas (cedula_paciente, fecha, hora, medico, especialidad) VALUES (?, ?, ?, ?, ?)",
-                       (cedula_act, str(fecha), str(hora), medico, especialidad))
-        conn.commit()
+        cursor.execute("""
+            SELECT COUNT(*) FROM citas 
+            WHERE medico = ? AND fecha = ? AND hora = ?
+        """, (medico_sel, str_fecha, str_hora))
+        conf_count = cursor.fetchone()[0]
         conn.close()
-        st.success("¡Cita agendada correctamente!")
+
+        if conf_count > 0:
+          st.error(f"❌ **Horario No Disponible:** El/La Dr(a). {medico_sel} ya tiene una cita agendada para el día **{str_fecha}** a las **{str_hora}**. Por favor seleccione otra hora o médico.")
+        else:
+          conn = sqlite3.connect("clinica.db", check_same_thread=False)
+          cursor = conn.cursor()
+          cursor.execute("""
+              INSERT INTO citas (cedula_paciente, fecha, hora, medico, especialidad) 
+              VALUES (?, ?, ?, ?, ?)
+          """, (cedula_act, str_fecha, str_hora, medico_sel, especialidad_sel))
+          conn.commit()
+          conn.close()
+          st.success(f"✅ ¡Cita agendada con éxito para el Dr(a). {medico_sel} el {str_fecha} a las {str_hora}!")
     st.divider()
 
-  st.subheader("Citas Registradas")
+  st.subheader("Listado de Citas Registradas")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   if role == "medico":
-    cursor.execute("SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula WHERE c.medico LIKE ?", (f"%{st.session_state['user_name'].split(' ')[1]}%",))
+    # Filtrar citas para el médico logueado
+    nombre_sesion = st.session_state['user_name']
+    cursor.execute("""
+        SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad 
+        FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula 
+        WHERE c.medico LIKE ?
+    """, (f"%{nombre_sesion.split(' ')[1]}%",))
   else:
-    cursor.execute("SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula")
+    cursor.execute("""
+        SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad 
+        FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula
+    """)
   citas_data = cursor.fetchall()
   conn.close()
+  
   if citas_data:
-    st.table(citas_data)
+    df_citas_view = pd.DataFrame(citas_data, columns=["Fecha", "Hora", "Paciente", "Médico", "Especialidad"])
+    st.dataframe(df_citas_view, use_container_width=True)
   else:
-    st.info("No hay citas registradas.")
+    st.info("No hay citas registradas en el sistema.")
 
 # --- MÓDULO: CONSULTA MÉDICA E HISTORIAL ---
 elif choice == "🩺 Consulta Médica (Historial)":
@@ -302,7 +354,6 @@ elif choice == "🩺 Consulta Médica (Historial)":
     paciente_sel = st.selectbox("Seleccione Paciente a Atender", list(pacientes_dict.keys()))
     cedula_paciente = pacientes_dict[paciente_sel]
 
-    # Contar cuantas atenciones previas tiene en el historial para la lógica C1 / SUB
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM pacientes WHERE cedula = ?", (cedula_paciente,))
@@ -312,11 +363,7 @@ elif choice == "🩺 Consulta Médica (Historial)":
     conteo_atenciones = cursor.fetchone()[0]
     conn.close()
 
-    # Lógica automática del código de consulta: C1 si es la primera, SUB si ya ha asistido
-    if conteo_atenciones == 0:
-      tipo_consulta_auto = "C1"
-    else:
-      tipo_consulta_auto = "SUB"
+    tipo_consulta_auto = "C1" if conteo_atenciones == 0 else "SUB"
 
     st.info(f"**Paciente:** {p_info[2]} | **Cédula:** {p_info[1]} | **Origen:** {p_info[5] if len(p_info) > 5 and p_info[5] else 'No especificado'}")
     st.warning(f"📊 **Historial de visitas:** Ha asistido {conteo_atenciones} vez/veces previa(s). **Código Asignado para esta Consulta:** `{tipo_consulta_auto}` ({'Primera Vez' if tipo_consulta_auto == 'C1' else 'Subsecuente'})")
