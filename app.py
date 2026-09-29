@@ -1,11 +1,31 @@
 from datetime import datetime
+import os
 import sqlite3
+import pandas as pd
 import streamlit as st
+
+# --- CONFIGURACIÓN DE TEMA CLARO (FONDO BLANCO) ---
+st.set_page_config(
+    page_title="Sistema de Gestión - Clínica", page_icon="🏥", layout="wide"
+)
+
+# Forzar estilos visuales limpios en blanco
+st.markdown("""
+    <style>
+    .main {
+        background-color: #FFFFFF;
+        color: #000000;
+    }
+    .stSidebar {
+        background-color: #F8F9FA;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 
 # --- CONFIGURACIÓN DE LA BASE DE DATOS ---
 def init_db():
-  conn = sqlite3.connect("clinica.db")
+  conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   # Tabla de Pacientes
   cursor.execute("""
@@ -47,13 +67,14 @@ def init_db():
 
 init_db()
 
-st.title("Sistema de Gestión y Agenda Médica - Clínica")
+# --- INTERFAZ DE USUARIO ---
+st.title("🏥 Sistema de Gestión y Agenda Médica - Clínica")
 
 menu = [
     "📅 Agenda y Citas",
     "👤 Registrar / Buscar Paciente",
     "🩺 Consulta Médica (Historial)",
-    "📥 Exportar Datos (Excel)",
+    "📥 Exportar Datos y Respaldo",
 ]
 choice = st.sidebar.selectbox("Menú de Navegación", menu)
 
@@ -61,7 +82,7 @@ choice = st.sidebar.selectbox("Menú de Navegación", menu)
 if choice == "📅 Agenda y Citas":
   st.subheader("Gestión de Agenda Virtual")
 
-  conn = sqlite3.connect("clinica.db")
+  conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute("SELECT cedula, nombre FROM pacientes")
   pacientes = cursor.fetchall()
@@ -92,7 +113,7 @@ if choice == "📅 Agenda y Citas":
 
     submitted = st.form_submit_button("Agendar Cita")
     if submitted and cedula_act:
-      conn = sqlite3.connect("clinica.db")
+      conn = sqlite3.connect("clinica.db", check_same_thread=False)
       cursor = conn.cursor()
       cursor.execute(
           "INSERT INTO citas (cedula_paciente, fecha, hora, medico,"
@@ -105,7 +126,7 @@ if choice == "📅 Agenda y Citas":
 
   st.divider()
   st.subheader("Citas Registradas")
-  conn = sqlite3.connect("clinica.db")
+  conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute("""
         SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad 
@@ -132,7 +153,7 @@ elif choice == "👤 Registrar / Buscar Paciente":
     if guardar:
       if cedula and nombre:
         try:
-          conn = sqlite3.connect("clinica.db")
+          conn = sqlite3.connect("clinica.db", check_same_thread=False)
           cursor = conn.cursor()
           cursor.execute(
               "INSERT INTO pacientes (cedula, nombre, telefono,"
@@ -141,10 +162,7 @@ elif choice == "👤 Registrar / Buscar Paciente":
           )
           conn.commit()
           conn.close()
-          st.success(
-              f"Paciente {nombre} registrado correctamente. Sus datos maestros"
-              " quedan guardados para siempre."
-          )
+          st.success(f"Paciente {nombre} registrado correctamente.")
         except sqlite3.IntegrityError:
           st.error("Error: Ya existe un paciente registrado con esta cédula.")
       else:
@@ -154,7 +172,7 @@ elif choice == "👤 Registrar / Buscar Paciente":
 elif choice == "🩺 Consulta Médica (Historial)":
   st.subheader("Atención Médica e Historial Clínico Acumulativo")
 
-  conn = sqlite3.connect("clinica.db")
+  conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute("SELECT cedula, nombre FROM pacientes")
   pacientes = cursor.fetchall()
@@ -168,7 +186,7 @@ elif choice == "🩺 Consulta Médica (Historial)":
     )
     cedula_paciente = pacientes_dict[paciente_sel]
 
-    conn = sqlite3.connect("clinica.db")
+    conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute(
         "SELECT * FROM pacientes WHERE cedula = ?", (cedula_paciente,)
@@ -206,7 +224,7 @@ elif choice == "🩺 Consulta Médica (Historial)":
 
     st.divider()
     st.subheader("Historial de Atenciones Anteriores")
-    conn = sqlite3.connect("clinica.db")
+    conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute(
         "SELECT fecha_atencion, motivo, diagnostico, receta FROM historial WHERE"
@@ -227,25 +245,34 @@ elif choice == "🩺 Consulta Médica (Historial)":
   else:
     st.warning("No hay pacientes registrados en el sistema.")
 
-# --- MÓDULO 4: EXPORTAR DATOS ---
-elif choice == "📥 Exportar Datos (Excel)":
-  st.subheader("Descargar Información de la Clínica")
+# --- MÓDULO 4: EXPORTAR DATOS Y RESPALDO ---
+elif choice == "📥 Exportar Datos y Respaldo":
+  st.subheader("Descarga de Respaldos y Archivos Excel")
   st.write(
-      "Puedes descargar las tablas del sistema en formato CSV (compatibles con"
-      " Excel) haciendo clic en los botones:"
+      "Aquí puedes descargar una copia de seguridad completa de la base de"
+      " datos o exportar tablas individuales en formato CSV/Excel."
   )
 
-  import pandas as pd
+  # BOTÓN DE RESPALDO TOTAL DE LA BASE DE DATOS (.db)
+  if os.path.exists("clinica.db"):
+    with open("clinica.db", "rb") as file:
+      st.download_button(
+          label="📥 Descargar Base de Datos Completa (.db)",
+          data=file,
+          file_name=f"clinica_respaldo_{datetime.now().strftime('%Y-%m-%d')}.db",
+          mime="application/octet-stream",
+          help=(
+              "Descarga un respaldo exacto de todo el sistema para guardarlo"
+              " en tu computadora."
+          ),
+      )
 
-  conn = sqlite3.connect("clinica.db")
+  st.divider()
 
-  # Exportar Pacientes
+  conn = sqlite3.connect("clinica.db", check_same_thread=False)
   df_pacientes = pd.read_sql_query("SELECT * FROM pacientes", conn)
-  # Exportar Citas
   df_citas = pd.read_sql_query("SELECT * FROM citas", conn)
-  # Exportar Historial
   df_historial = pd.read_sql_query("SELECT * FROM historial", conn)
-
   conn.close()
 
   st.markdown("### 1. Lista de Pacientes")
@@ -253,7 +280,7 @@ elif choice == "📥 Exportar Datos (Excel)":
     st.dataframe(df_pacientes)
     csv_pacientes = df_pacientes.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📥 Descargar Pacientes en CSV/Excel",
+        label="📥 Descargar Pacientes en CSV",
         data=csv_pacientes,
         file_name="pacientes_clinica.csv",
         mime="text/csv",
@@ -266,7 +293,7 @@ elif choice == "📥 Exportar Datos (Excel)":
     st.dataframe(df_citas)
     csv_citas = df_citas.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📥 Descargar Citas en CSV/Excel",
+        label="📥 Descargar Citas en CSV",
         data=csv_citas,
         file_name="citas_clinica.csv",
         mime="text/csv",
@@ -279,7 +306,7 @@ elif choice == "📥 Exportar Datos (Excel)":
     st.dataframe(df_historial)
     csv_historial = df_historial.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📥 Descargar Historial Clínico en CSV/Excel",
+        label="📥 Descargar Historial Clínico en CSV",
         data=csv_historial,
         file_name="historial_clinica.csv",
         mime="text/csv",
