@@ -1,6 +1,9 @@
 from datetime import datetime
 import os
 import io
+import docx
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 sqlite3 = __import__("sqlite3")
 pd = __import__("pandas")
 st = __import__("streamlit")
@@ -112,7 +115,7 @@ MEDICOS_ESPECIALIDADES = {
     "Geriatría": ["Dra. Mildred"],
     "Ginecología": ["Dr. Alejandro Argiz", "Dra. Marilyn Martínez"],
     "Logopedia": ["Dra. Osmarie Barbosa"],
-    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dr. Osmarie Barbosa"],
+    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dra. Osmarie Barbosa"],
     "Medicina Interna": ["Dr. Ovadiz Pérez"],
     "Neumología": ["Dra. Eva Barbosa"],
     "Neurología": ["Dr. Dayron Douglas Calvo"],
@@ -222,6 +225,100 @@ else:  # Admin
 
 choice = st.sidebar.selectbox("Seleccione opción", menu)
 
+# --- FUNCIÓN AUXILIAR PARA GENERAR WORD FORMATEADO ---
+def generar_documento_word(info_p, visitas, codigo_estado, historial_p):
+  doc = docx.Document()
+  
+  # Estilo y Márgenes
+  sections = doc.sections
+  for section in sections:
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+
+  # Encabezado Institucional
+  p_head = doc.add_paragraph()
+  p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
+  run_head = p_head.add_run("SISTEMA MÉDICO CLÍNICO - MEDISUPORT\nEXPEDIENTE DE HISTORIA CLÍNICA")
+  run_head.font.name = 'Arial'
+  run_head.font.size = Pt(14)
+  run_head.font.bold = True
+  run_head.font.color.rgb = RGBColor(0, 51, 102)
+
+  doc.add_paragraph("-------------------------------------------------------------------------------------------------------------")
+
+  # Datos Personales
+  p_datos_title = doc.add_paragraph()
+  run_dt = p_datos_title.add_run("1. DATOS DE IDENTIFICACIÓN Y FILIACIÓN")
+  run_dt.font.bold = True
+  run_dt.font.size = Pt(12)
+  run_dt.font.color.rgb = RGBColor(0, 51, 102)
+
+  p_info = doc.add_paragraph()
+  p_info.add_run(f"• Nombre Completo: ").bold = True
+  p_info.add_run(f"{info_p[2]}\n")
+  p_info.add_run(f"• Documento de Identidad: ").bold = True
+  p_info.add_run(f"{info_p[1]}\n")
+  p_info.add_run(f"• Sexo: ").bold = True
+  p_info.add_run(f"{info_p[3]}    |   ")
+  p_info.add_run(f"Fecha de Nacimiento: ").bold = True
+  p_info.add_run(f"{info_p[4]}\n")
+  p_info.add_run(f"• Domicilio: ").bold = True
+  p_info.add_run(f"{info_p[5]}\n")
+  p_info.add_run(f"• Teléfono: ").bold = True
+  p_info.add_run(f"{info_p[6]}    |   ")
+  p_info.add_run(f"Correo: ").bold = True
+  p_info.add_run(f"{info_p[7]}\n")
+  p_info.add_run(f"• Ocupación: ").bold = True
+  p_info.add_run(f"{info_p[8]}    |   ")
+  p_info.add_run(f"Sistema de Salud: ").bold = True
+  p_info.add_run(f"{info_p[9]}\n")
+  p_info.add_run(f"• Origen de Registro: ").bold = True
+  p_info.add_run(f"{info_p[10] if len(info_p) > 10 else 'N/A'}\n")
+  p_info.add_run(f"• Resumen de Visitas: ").bold = True
+  p_info.add_run(f"Total de Atenciones: {visitas}  (Clasificación Actual: {codigo_estado})\n")
+
+  doc.add_paragraph("-------------------------------------------------------------------------------------------------------------")
+
+  # Historial de Atenciones
+  p_hist_title = doc.add_paragraph()
+  run_ht = p_hist_title.add_run("2. EVOLUCIÓN Y REGISTRO DE ATENCIONES MÉDICAS")
+  run_ht.font.bold = True
+  run_ht.font.size = Pt(12)
+  run_ht.font.color.rgb = RGBColor(0, 51, 102)
+
+  if historial_p:
+    for idx, h in enumerate(historial_p, 1):
+      p_atn = doc.add_paragraph()
+      p_atn.add_run(f"Atención #{len(historial_p) - idx + 1} - Fecha: {h[0]} [Código: {h[2]}]\n").bold = True
+      p_atn.add_run(f"Médico Tratante: {h[1]}\n").italic = True
+      
+      p_atn.add_run(f"  - Motivo de Consulta: ").bold = True
+      p_atn.add_run(f"{h[6]}\n")
+      p_atn.add_run(f"  - Enfermedad Actual / Anamnesis: ").bold = True
+      p_atn.add_run(f"{h[7]}\n")
+      p_atn.add_run(f"  - Antecedentes Personales: ").bold = True
+      p_atn.add_run(f"{h[3]} | Familiares: {h[4]} | Hábitos: {h[5]}\n")
+      p_atn.add_run(f"  - Signos Vitales y Antropometría: ").bold = True
+      p_atn.add_run(f"Peso: {h[8]} kg | Talla: {h[9]} cm | PA: {h[10]} | FC: {h[11]} lpm | IMC: {h[12]}\n")
+      p_atn.add_run(f"  - Diagnóstico: ").bold = True
+      p_atn.add_run(f"{h[13]}\n")
+      p_atn.add_run(f"  - Tratamiento / Receta: ").bold = True
+      p_atn.add_run(f"{h[14]}\n")
+      p_atn.add_run(f"  - Exámenes Complementarios: ").bold = True
+      p_atn.add_run(f"{h[15]}\n")
+      
+      doc.add_paragraph(".............................................................................................................................")
+  else:
+    doc.add_paragraph("El paciente no registra atenciones médicas previas en el sistema.")
+
+  # Guardar en memoria virtual para descarga
+  file_stream = io.BytesIO()
+  doc.save(file_stream)
+  file_stream.seek(0)
+  return file_stream.getvalue()
+
 # --- MÓDULO 1: REGISTRAR PACIENTE ---
 if choice == "👤 Registrar Paciente":
   st.subheader("➕ Registro de Nuevo Paciente - Medisuport")
@@ -260,7 +357,7 @@ if choice == "👤 Registrar Paciente":
       else:
         st.warning("Complete al menos el número de documento y el nombre completo.")
 
-# --- MÓDULO 2: BUSCAR Y GESTIONAR PACIENTES (CON DESCARGA DE HISTORIA CLÍNICA) ---
+# --- MÓDULO 2: BUSCAR Y GESTIONAR PACIENTES (CON DESCARGA WORD) ---
 elif choice == "🔍 Buscar y Gestionar Pacientes":
   st.subheader("🔍 Ficha Clínica y Búsqueda de Pacientes")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
@@ -299,49 +396,14 @@ elif choice == "🔍 Buscar y Gestionar Pacientes":
         st.write(f"**Domicilio:** {info_p[5]} | **Ocupación:** {info_p[8]} | **Sistema de Salud:** {info_p[9]}")
         st.info(f"📊 **Total de Atenciones Previas:** {visitas} | **Código Actual:** `{codigo_estado}`")
 
-        # --- CONSTRUCCIÓN DEL REPORTE PARA DESCARGAR ---
-        texto_historia = f"""==================================================
-        CLÍNICA MEDISUPORT - HISTORIA CLÍNICA COMPLETO
-==================================================
-DATOS DEL PACIENTE:
-- Nombre: {info_p[2]}
-- Documento / Cédula: {info_p[1]}
-- Sexo: {info_p[3]}
-- Fecha de Nacimiento: {info_p[4]}
-- Domicilio: {info_p[5]}
-- Teléfono: {info_p[6]}
-- Correo: {info_p[7]}
-- Ocupación: {info_p[8]}
-- Sistema de Salud / Previsión: {info_p[9]}
-- Origen: {info_p[10] if len(info_p) > 10 else 'N/A'}
-- Total de Visitas: {visitas} (Código actual: {codigo_estado})
---------------------------------------------------
-REGISTRO DE ATENCIONES MÉDICAS:
-"""
-        if historial_p:
-          for h in historial_p:
-            texto_historia += f"""
-[Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}]
-- Motivo de Consulta: {h[6]}
-- Enfermedad Actual: {h[7]}
-- Antecedentes Personales: {h[3]}
-- Antecedentes Familiares: {h[4]}
-- Hábitos: {h[5]}
-- Signos Vitales: Peso: {h[8]}kg | Talla: {h[9]}cm | PA: {h[10]} | FC: {h[11]} | IMC: {h[12]}
-- Diagnóstico: {h[13]}
-- Tratamiento y Receta: {h[14]}
-- Exámenes / Estudios: {h[15]}
---------------------------------------------------
-"""
-        else:
-          texto_historia += "No hay atenciones médicas previas registradas.\n"
+        # Generar archivo Word formateado en memoria
+        word_bytes = generar_documento_word(info_p, visitas, codigo_estado, historial_p)
 
-        # Botón de descarga directa
         st.download_button(
-            label="📥 Descargar Historia Clínica Completa (.txt)",
-            data=texto_historia,
-            file_name=f"historia_clinica_{info_p[1]}.txt",
-            mime="text/plain"
+            label="📥 Descargar Historia Clínica en Formato Word (.docx)",
+            data=word_bytes,
+            file_name=f"Historia_Clinica_{info_p[1]}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
 
         if historial_p:
