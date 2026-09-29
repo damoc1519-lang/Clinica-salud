@@ -79,7 +79,53 @@ def init_db():
             FOREIGN KEY(cedula_paciente) REFERENCES pacientes(cedula)
         )
     """)
-  
+
+    # Tabla para la disponibilidad gestionada por la secretaria
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS disponibilidad (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medico TEXT UNIQUE,
+            especialidad TEXT,
+            dias TEXT,
+            horas TEXT
+        )
+    """)
+
+    # Poblar datos iniciales si la tabla está vacía
+    cursor.execute("SELECT COUNT(*) FROM disponibilidad")
+    if cursor.fetchone()[0] == 0:
+        default_data = [
+            ("Dra. Kanie Collado", "Alergología", "Lunes y Miércoles", "08:00 - 13:00"),
+            ("Dr. Norberto Carballosa", "Anestesiología", "Martes y Jueves", "09:00 - 14:00"),
+            ("Dra. Lisset Alfonso", "Cardiología", "Lunes, Miércoles y Viernes", "08:00 - 12:00"),
+            ("Dr. Miguel Mederos", "Dermatología", "Martes y Viernes", "13:00 - 18:00"),
+            ("Dr. Frank Medina", "Endocrinología", "Martes y Jueves", "08:00 - 12:00"),
+            ("Dr. Miguel Marrero", "Endocrinología", "Lunes y Miércoles", "14:00 - 18:00"),
+            ("Dra. Gabriela Vélez", "Endocrinología", "Viernes", "08:00 - 13:00"),
+            ("Dr. Pavel Mili", "Fisiatría", "Lunes y Jueves", "08:00 - 13:00"),
+            ("Dr. Yunio Torres", "Fisiatría", "Martes y Miércoles", "13:00 - 17:00"),
+            ("Dr. Frank Pérez", "Gastroenterología", "Lunes a Viernes", "08:00 - 12:00"),
+            ("Dra. Mildred", "Geriatría", "Miércoles y Viernes", "09:00 - 14:00"),
+            ("Dr. Alejandro Argiz", "Ginecología", "Lunes y Martes", "08:00 - 13:00"),
+            ("Dra. Marilyn Martínez", "Ginecología", "Miércoles y Jueves", "13:00 - 18:00"),
+            ("Dra. Osmarie Barbosa", "Logopedia / Medicina General", "Lunes a Viernes", "08:00 - 16:00"),
+            ("Dr. Yoandis Pérez", "Medicina General", "Lunes a Viernes", "08:00 - 16:00"),
+            ("Dra. Ailicec Arias", "Medicina General / Pediatría", "Lunes a Viernes", "08:00 - 16:00"),
+            ("Dr. Ovadiz Pérez", "Medicina Interna", "Lunes, Miércoles y Viernes", "08:00 - 13:00"),
+            ("Dra. Eva Barbosa", "Neumología", "Martes y Jueves", "09:00 - 14:00"),
+            ("Dr. Dayron Douglas Calvo", "Neurología", "Lunes y Miércoles", "09:00 - 13:00"),
+            ("Lcdo. Andrés Hidrobo", "Nutrición", "Martes y Jueves", "08:00 - 15:00"),
+            ("Dr. Fernando Enríquez", "Otorrinolaringología", "Lunes, Miércoles y Viernes", "13:00 - 17:00"),
+            ("Dra. María Cristina Torres", "Pediatría", "Lunes a Viernes", "08:00 - 13:00"),
+            ("Lcdo. Jerson Rodríguez", "Psicología", "Lunes a Viernes", "09:00 - 17:00"),
+            ("Dra. Yulca Rosales", "Psiquiatría", "Martes y Jueves", "14:00 - 18:00"),
+            ("Dr. Dennis Pucha", "Reumatología", "Lunes y Miércoles", "08:00 - 12:00"),
+            ("Dr. Rafael Echavarría", "Reumatología", "Martes y Jueves", "13:00 - 17:00"),
+            ("Dr. Antonio Leal", "Traumatología", "Lunes a Viernes", "08:00 - 14:00"),
+            ("Dr. William Fonseca", "Urología", "Lunes, Miércoles y Viernes", "08:00 - 13:00")
+        ]
+        cursor.executemany("INSERT OR IGNORE INTO disponibilidad (medico, especialidad, dias, horas) VALUES (?, ?, ?, ?)", default_data)
+
     cursor.execute("PRAGMA table_info(citas)")
     c_cols = [col[1] for col in cursor.fetchall()]
     for col_name, col_type in [("vencimiento_issfa", "TEXT"), ("estado", "TEXT"), ("observaciones", "TEXT")]:
@@ -103,51 +149,41 @@ def init_db():
 
 init_db()
 
-# --- DICCIONARIO DE MÉDICOS, ESPECIALIDADES Y HORARIOS INSTITUCIONALES ---
-MEDICOS_INFO = {
-    "Dra. Kanie Collado": {"esp": "Alergología", "dias": "Lunes y Miércoles", "horas": "08:00 - 13:00"},
-    "Dr. Norberto Carballosa": {"esp": "Anestesiología", "dias": "Martes y Jueves", "horas": "09:00 - 14:00"},
-    "Dra. Lisset Alfonso": {"esp": "Cardiología", "dias": "Lunes, Miércoles y Viernes", "horas": "08:00 - 12:00"},
-    "Dr. Miguel Mederos": {"esp": "Dermatología", "dias": "Martes y Viernes", "horas": "13:00 - 18:00"},
-    "Dr. Frank Medina": {"esp": "Endocrinología", "dias": "Martes y Jueves", "horas": "08:00 - 12:00"},
-    "Dr. Miguel Marrero": {"esp": "Endocrinología", "dias": "Lunes y Miércoles", "horas": "14:00 - 18:00"},
-    "Dra. Gabriela Vélez": {"esp": "Endocrinología", "dias": "Viernes", "horas": "08:00 - 13:00"},
-    "Dr. Pavel Mili": {"esp": "Fisiatría", "dias": "Lunes y Jueves", "horas": "08:00 - 13:00"},
-    "Dr. Yunio Torres": {"esp": "Fisiatría", "dias": "Martes y Miércoles", "horas": "13:00 - 17:00"},
-    "Dr. Frank Pérez": {"esp": "Gastroenterología", "dias": "Lunes a Viernes", "horas": "08:00 - 12:00"},
-    "Dra. Mildred": {"esp": "Geriatría", "dias": "Miércoles y Viernes", "horas": "09:00 - 14:00"},
-    "Dr. Alejandro Argiz": {"esp": "Ginecología", "dias": "Lunes y Martes", "horas": "08:00 - 13:00"},
-    "Dra. Marilyn Martínez": {"esp": "Ginecología", "dias": "Miércoles y Jueves", "horas": "13:00 - 18:00"},
-    "Dra. Osmarie Barbosa": {"esp": "Logopedia / Medicina General", "dias": "Lunes a Viernes", "horas": "08:00 - 16:00"},
-    "Dr. Yoandis Pérez": {"esp": "Medicina General", "dias": "Lunes a Viernes", "horas": "08:00 - 16:00"},
-    "Dra. Ailicec Arias": {"esp": "Medicina General / Pediatría", "dias": "Lunes a Viernes", "horas": "08:00 - 16:00"},
-    "Dr. Ovadiz Pérez": {"esp": "Medicina Interna", "dias": "Lunes, Miércoles y Viernes", "horas": "08:00 - 13:00"},
-    "Dra. Eva Barbosa": {"esp": "Neumología", "dias": "Martes y Jueves", "horas": "09:00 - 14:00"},
-    "Dr. Dayron Douglas Calvo": {"esp": "Neurología", "dias": "Lunes y Miércoles", "horas": "09:00 - 13:00"},
-    "Lcdo. Andrés Hidrobo": {"esp": "Nutrición", "dias": "Martes y Jueves", "horas": "08:00 - 15:00"},
-    "Dr. Fernando Enríquez": {"esp": "Otorrinolaringología", "dias": "Lunes, Miércoles y Viernes", "horas": "13:00 - 17:00"},
-    "Dra. María Cristina Torres": {"esp": "Pediatría", "dias": "Lunes a Viernes", "horas": "08:00 - 13:00"},
-    "Lcdo. Jerson Rodríguez": {"esp": "Psicología", "dias": "Lunes a Viernes", "horas": "09:00 - 17:00"},
-    "Dra. Yulca Rosales": {"esp": "Psiquiatría", "dias": "Martes y Jueves", "horas": "14:00 - 18:00"},
-    "Dr. Dennis Pucha": {"esp": "Reumatología", "dias": "Lunes y Miércoles", "horas": "08:00 - 12:00"},
-    "Dr. Rafael Echavarría": {"esp": "Reumatología", "dias": "Martes y Jueves", "horas": "13:00 - 17:00"},
-    "Dr. Antonio Leal": {"esp": "Traumatología", "dias": "Lunes a Viernes", "horas": "08:00 - 14:00"},
-    "Dr. William Fonseca": {"esp": "Urología", "dias": "Lunes, Miércoles y Viernes", "horas": "08:00 - 13:00"}
-}
+# --- FUNCIONES AUXILIARES PARA CARGAR DISPONIBILIDAD DESDE DB ---
+def obtener_medicos_info():
+    conn = sqlite3.connect("clinica.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT medico, especialidad, dias, horas FROM disponibilidad")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    info = {}
+    for r in rows:
+        info[r[0]] = {"esp": r[1], "dias": r[2], "horas": r[3]}
+    return info
 
-MEDICOS_ESPECIALIDADES = {}
-for doc, info in MEDICOS_INFO.items():
-    esp = info["esp"]
-    if esp not in MEDICOS_ESPECIALIDADES:
-        MEDICOS_ESPECIALIDADES[esp] = []
-    MEDICOS_ESPECIALIDADES[esp].append(doc)
+def obtener_medicos_especialidades():
+    medicos_info = obtener_medicos_info()
+    esp_dict = {}
+    for doc, info in medicos_info.items():
+        esp = info["esp"]
+        if esp not in esp_dict:
+            esp_dict[esp] = []
+        esp_dict[esp].append(doc)
+    return esp_dict
 
-USERS = {
-    "Abigail Ruiz (Secretaria)": {"pass": "sec2026", "role": "secretaria"},
-    "Administrador": {"pass": "admin2026", "role": "admin"}
-}
-for doc in MEDICOS_INFO.keys():
-    USERS[f"{doc} ({MEDICOS_INFO[doc]['esp']})"] = {"pass": "med123", "role": "medico"}
+# --- SISTEMA DE AUTENTICACIÓN POR ROLES ---
+def obtener_usuarios():
+    medicos_info = obtener_medicos_info()
+    users = {
+        "Abigail Ruiz (Secretaria)": {"pass": "sec2026", "role": "secretaria"},
+        "Administrador": {"pass": "admin2026", "role": "admin"}
+    }
+    for doc in medicos_info.keys():
+        users[f"{doc} ({medicos_info[doc]['esp']})"] = {"pass": "med123", "role": "medico"}
+    return users
+
+USERS = obtener_usuarios()
 
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
@@ -419,11 +455,14 @@ elif choice == "Listado de Pacientes":
     else:
         st.info("No hay pacientes registrados.")
 
-# --- NUEVO MÓDULO: DISPONIBILIDAD DE MÉDICOS ---
+# --- MÓDULO GESTIÓN DE DISPONIBILIDAD (DÍA A DÍA POR LA SECRETARIA) ---
 elif choice == "Disponibilidad de Medicos":
-    st.subheader("📅 Consulta de Disponibilidad y Horarios de Médicos")
-    st.write("Seleccione una especialidad o revise la disponibilidad institucional por días de la semana y horarios.")
+    st.subheader("📅 Gestión de Disponibilidad y Horarios de Médicos")
+    st.write("Visualice y actualice los días y horas de atención según el día a día institucional.")
   
+    MEDICOS_INFO = obtener_medicos_info()
+    MEDICOS_ESPECIALIDADES = obtener_medicos_especialidades()
+
     esp_filtro = st.selectbox("Filtrar por Especialidad", ["Todas"] + list(MEDICOS_ESPECIALIDADES.keys()))
   
     data_dispo = []
@@ -439,9 +478,38 @@ elif choice == "Disponibilidad de Medicos":
     df_dispo = pd.DataFrame(data_dispo)
     st.dataframe(df_dispo, use_container_width=True)
 
+    # Permitir a la secretaria o admin actualizar la disponibilidad en tiempo real
+    if role in ["secretaria", "admin"]:
+        st.divider()
+        st.write("### 🛠️ Actualizar Disponibilidad Diaria del Médico")
+        with st.form("form_editar_disponibilidad"):
+            medico_a_editar = st.selectbox("Seleccionar Médico", list(MEDICOS_INFO.keys()))
+            info_actual = MEDICOS_INFO[medico_a_editar]
+            
+            nuevo_dia = st.text_input("Días de Atención (Ej. Lunes, Miércoles, o Martes y Jueves)", value=info_actual["dias"])
+            nuevo_horario = st.text_input("Horario (Ej. 08:00 - 13:00)", value=info_actual["horas"])
+            
+            actualizar_disp = st.form_submit_button("Guardar Cambios de Disponibilidad")
+            
+            if actualizar_disp:
+                conn = sqlite3.connect("clinica.db", check_same_thread=False)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE disponibilidad 
+                    SET dias = ?, horas = ? 
+                    WHERE medico = ?
+                """, (nuevo_dia, nuevo_horario, medico_a_editar))
+                conn.commit()
+                conn.close()
+                st.success(f"✅ ¡Disponibilidad actualizada con éxito para {medico_a_editar}!")
+                st.rerun()
+
 # --- MÓDULO 4: AGENDA Y CITAS ---
 elif choice in ["Agenda y Citas", "Ver Agenda de Citas"]:
     st.subheader("📅 Agenda Médica Virtual e Institucional")
+    
+    MEDICOS_INFO = obtener_medicos_info()
+    MEDICOS_ESPECIALIDADES = obtener_medicos_especialidades()
   
     if role in ["secretaria", "admin"]:
         conn = sqlite3.connect("clinica.db", check_same_thread=False)
@@ -464,7 +532,7 @@ elif choice in ["Agenda y Citas", "Ver Agenda de Citas"]:
     
         medico_sel = st.selectbox("Médico Tratante", medicos_disponibles, key="select_medico_cita")
         info_med = MEDICOS_INFO[medico_sel]
-        st.info(f"💡 **Disponibilidad configurada para {medico_sel}:** {info_med['dias']} en horario de {info_med['horas']}.")
+        st.info(f"💡 **Disponibilidad actual en el sistema para {medico_sel}:** {info_med['dias']} en horario de {info_med['horas']}.")
 
         with st.form("form_cita_real"):
             col1, col2 = st.columns(2)
