@@ -314,7 +314,7 @@ def generar_documento_word(info_p, visitas, codigo_estado, historial_p):
   p_info.add_run("• Origen de Registro: ").bold = True
   p_info.add_run(f"{info_p[10] if len(info_p) > 10 else 'N/A'}\n")
   p_info.add_run("• Resumen de Visitas: ").bold = True
-  p_info.add_run(f"Total de Atenciones: {visitas}  (Clasificación Actual: {codigo_estado}\n)")
+  p_info.add_run(f"Total de Atenciones: {visitas}  (Clasificación Actual: {codigo_estado})\n")
 
   doc.add_paragraph("-------------------------------------------------------------------------------------------------------------")
 
@@ -391,7 +391,7 @@ elif choice == "Buscar y Gestionar Pacientes":
         st.write(f"**Nombre:** {info_p[2]} | **Sexo:** {info_p[3]} | **F. Nacimiento:** {info_p[4]}")
         st.write(f"**Documento:** {info_p[1]} | **Teléfono:** {info_p[6]} | **Correo:** {info_p[7]}")
         st.write(f"**Domicilio:** {info_p[5]} | **Ocupación:** {info_p[8]} | **Sistema de Salud:** {info_p[9]}")
-        st.info(f"📊 **Total de Atenciones Previas:** {visitas} | **Código Actual:** `{codigo_estado}`[cite: 3]")
+        st.info(f"📊 **Total de Atenciones Previas:** {visitas} | **Código Actual:** `{codigo_estado}`")
 
         word_bytes = generar_documento_word(info_p, visitas, codigo_estado, historial_p)
 
@@ -414,7 +414,7 @@ elif choice == "Buscar y Gestionar Pacientes":
               st.write(f"**Tratamiento y Receta:** {h[14]}")
               st.write(f"**Resultados de Exámenes:** {h[15]}")
         else:
-          st.warning("Este paciente no cuenta con consultas previas registradas (Le corresponde código C1)[cite: 3].")
+          st.warning("Este paciente no cuenta con consultas previas registradas (Le corresponde código C1).")
 
     st.divider()
     if role in ["secretaria", "admin"]:
@@ -638,7 +638,7 @@ elif choice in ["Consulta Medica (Historial)", "Consulta Médica (Historial)"]:
     tipo_consulta_auto = "C1" if conteo_atenciones == 0 else "SUB"
 
     st.info(f"**Paciente:** {p_info[2]} | **Doc:** {p_info[1]} | **Sistema de Salud / Previsión:** {p_info[9] if p_info[9] else 'No especificado'}")
-    st.warning(f"📊 **Historial de visitas:** Ha asistido {conteo_atenciones} vez/veces previa(s). **Código Asignado para esta Consulta:** `{tipo_consulta_auto}` ({'Primera Vez' if tipo_consulta_auto == 'C1' else 'Subsecuente'})[cite: 3]")
+    st.warning(f"📊 **Historial de visitas:** Ha asistido {conteo_atenciones} vez/veces previa(s). **Código Asignado para esta Consulta:** `{tipo_consulta_auto}` ({'Primera Vez' if tipo_consulta_auto == 'C1' else 'Subsecuente'})")
 
     with st.form("form_atencion_completa"):
       st.write("### 1. Antecedentes Clínicos")
@@ -715,7 +715,7 @@ elif choice in ["Consulta Medica (Historial)", "Consulta Médica (Historial)"]:
           st.write(f"**Tratamiento:** {h[14]}")
           st.write(f"**Exámenes:** {h[15]}")
     else:
-      st.info("No hay registros previos para este paciente. Esta consulta se registrará como C1[cite: 3].")
+      st.info("No hay registros previos para este paciente. Esta consulta se registrará como C1.")
   else:
     st.warning("No hay pacientes registrados.")
 
