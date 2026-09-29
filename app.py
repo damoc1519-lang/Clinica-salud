@@ -7,7 +7,7 @@ st = __import__("streamlit")
 
 # --- CONFIGURACIÓN DE TEMA CLARO ---
 st.set_page_config(
-    page_title="Sistema Clínico - Control Interno", page_icon="🏥", layout="wide"
+    page_title="Medisuport - Sistema Clínico", page_icon="🏥", layout="wide"
 )
 
 st.markdown("""
@@ -21,15 +21,19 @@ st.markdown("""
 def init_db():
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
+  
+  # Tabla de pacientes con origen y campos necesarios
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS pacientes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cedula TEXT UNIQUE NOT NULL,
             nombre TEXT NOT NULL,
             telefono TEXT,
-            fecha_nacimiento TEXT
+            fecha_nacimiento TEXT,
+            origen TEXT
         )
     """)
+  
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS citas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,12 +45,15 @@ def init_db():
             FOREIGN KEY(cedula_paciente) REFERENCES pacientes(cedula)
         )
     """)
+    
+  # Historial con soporte para código de consulta (C1 o SUB)
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS historial (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cedula_paciente TEXT,
             fecha_atencion TEXT,
             medico_atn TEXT,
+            tipo_consulta TEXT,
             motivo TEXT,
             diagnostico TEXT,
             receta TEXT,
@@ -54,24 +61,17 @@ def init_db():
         )
     """)
   
-  # Verificación de seguridad para actualizar bases de datos antiguas
+  # Verificación de seguridad para bases de datos existentes
+  cursor.execute("PRAGMA table_info(pacientes)")
+  p_cols = [col[1] for col in cursor.fetchall()]
+  if "origen" not in p_cols:
+    cursor.execute("ALTER TABLE pacientes ADD COLUMN origen TEXT")
+
   cursor.execute("PRAGMA table_info(historial)")
-  columnas = [col[1] for col in cursor.fetchall()]
-  if "motivo" not in columnas:
-    cursor.execute("DROP TABLE historial")
-    cursor.execute("""
-            CREATE TABLE historial (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cedula_paciente TEXT,
-                fecha_atencion TEXT,
-                medico_atn TEXT,
-                motivo TEXT,
-                diagnostico TEXT,
-                receta TEXT,
-                FOREIGN KEY(cedula_paciente) REFERENCES pacientes(cedula)
-            )
-        """)
-        
+  h_cols = [col[1] for col in cursor.fetchall()]
+  if "tipo_consulta" not in h_cols:
+    cursor.execute("ALTER TABLE historial ADD COLUMN tipo_consulta TEXT")
+
   conn.commit()
   conn.close()
 
@@ -91,8 +91,8 @@ if "logged_in" not in st.session_state:
   st.session_state["user_role"] = ""
 
 if not st.session_state["logged_in"]:
-  st.title("🏥 Acceso al Sistema - Clínica")
-  st.write("Por favor, seleccione su perfil e ingrese su contraseña para continuar.")
+  st.title("🏥 Medisuport - Control de Acceso")
+  st.write("Seleccione su perfil e ingrese su contraseña para continuar.")
   
   with st.form("login_form"):
     selected_user = st.selectbox("Seleccionar Usuario / Rol", list(USERS.keys()))
@@ -109,15 +109,14 @@ if not st.session_state["logged_in"]:
         st.error("Contraseña incorrecta. Intente nuevamente.")
   st.stop()
 
-# --- BARRA LATERAL Y NAVEGACIÓN SEGÚN ROL ---
+# --- BARRA LATERAL Y NAVEGACIÓN ---
+st.sidebar.title("Medisuport 🏥")
 st.sidebar.write(f"👤 **Usuario:** {st.session_state['user_name']}")
 if st.sidebar.button("Cerrar Sesión"):
   st.session_state["logged_in"] = False
   st.rerun()
 
 st.sidebar.divider()
-st.sidebar.title("Menú de Navegación")
-
 role = st.session_state["user_role"]
 
 if role == "secretaria":
@@ -131,31 +130,43 @@ choice = st.sidebar.selectbox("Seleccione opción", menu)
 
 # --- MÓDULO: PACIENTES ---
 if choice == "👤 Registrar / Buscar Paciente":
-  st.subheader("Gestión de Pacientes")
+  st.subheader("Gestión y Registro de Pacientes - Medisuport")
   with st.form("form_paciente"):
     cedula = st.text_input("Número de Cédula")
     nombre = st.text_input("Nombre Completo del Paciente")
     telefono = st.text_input("Teléfono / Celular")
     f_nac = st.date_input("Fecha de Nacimiento", datetime(1990, 1, 1))
+    origen = st.selectbox("Origen del Paciente", ["Propio de la Clínica", "Prestador Externo ISSFA"])
     guardar = st.form_submit_button("Guardar Paciente")
+    
     if guardar:
       if cedula and nombre:
         try:
           conn = sqlite3.connect("clinica.db", check_same_thread=False)
           cursor = conn.cursor()
-          cursor.execute("INSERT INTO pacientes (cedula, nombre, telefono, fecha_nacimiento) VALUES (?, ?, ?, ?)",
-                         (cedula, nombre, telefono, str(f_nac)))
+          cursor.execute("INSERT INTO pacientes (cedula, nombre, telefono, fecha_nacimiento, origen) VALUES (?, ?, ?, ?, ?)",
+                         (cedula, nombre, telefono, str(f_nac), origen))
           conn.commit()
           conn.close()
-          st.success(f"Paciente {nombre} registrado con éxito.")
+          st.success(f"Paciente {nombre} registrado con éxito ({origen}).")
         except sqlite3.IntegrityError:
           st.error("Error: Ya existe un paciente registrado con esta cédula.")
       else:
         st.warning("Complete la cédula y el nombre.")
 
+  st.divider()
+  st.subheader("Directorio de Pacientes Registrados")
+  conn = sqlite3.connect("clinica.db", check_same_thread=False)
+  df_p = pd.read_sql_query("SELECT cedula, nombre, telefono, fecha_nacimiento, origen FROM pacientes", conn)
+  conn.close()
+  if not df_p.empty:
+    st.dataframe(df_p, use_container_width=True)
+  else:
+    st.info("No hay pacientes registrados aún.")
+
 # --- MÓDULO: AGENDA Y CITAS ---
 elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
-  st.subheader("Agenda Médica Virtual")
+  st.subheader("Agenda Médica Virtual - Medisuport")
   
   if role in ["secretaria", "admin"]:
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
@@ -190,7 +201,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
         st.success("¡Cita agendada correctamente!")
     st.divider()
 
-  st.subheader("Citas Registradas en el Sistema")
+  st.subheader("Citas Registradas")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   if role == "medico":
@@ -206,7 +217,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
 
 # --- MÓDULO: CONSULTA MÉDICA E HISTORIAL ---
 elif choice == "🩺 Consulta Médica (Historial)":
-  st.subheader("Atención Médica y Registro en Historial")
+  st.subheader("Atención Médica y Evolución - Medisuport")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute("SELECT cedula, nombre FROM pacientes")
@@ -218,16 +229,27 @@ elif choice == "🩺 Consulta Médica (Historial)":
     paciente_sel = st.selectbox("Seleccione Paciente a Atender", list(pacientes_dict.keys()))
     cedula_paciente = pacientes_dict[paciente_sel]
 
+    # Contar cuantas atenciones previas tiene en el historial
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM pacientes WHERE cedula = ?", (cedula_paciente,))
     p_info = cursor.fetchone()
+    
+    cursor.execute("SELECT COUNT(*) FROM historial WHERE cedula_paciente = ?", (cedula_paciente,))
+    conteo_atenciones = cursor.fetchone()[0]
     conn.close()
 
-    st.info(f"**Paciente:** {p_info[2]} | **Cédula:** {p_info[1]} | **Teléfono:** {p_info[3]}")
+    # Lógica automática del código de consulta: C1 si es la primera, SUB si ya ha asistido
+    if conteo_atenciones == 0:
+      tipo_consulta_auto = "C1 (Primera Vez)"
+    else:
+      tipo_consulta_auto = "SUB (Subsecuente / Control)"
+
+    st.info(f"**Paciente:** {p_info[2]} | **Cédula:** {p_info[1]} | **Origen:** {p_info[4] if len(p_info) > 4 and p_info[4] else 'No especificado'}")
+    st.warning(f"📊 **Historial de visitas:** Ha asistido {conteo_atenciones} vez/veces previa(s) a la clínica. **Código de Consulta Asignado:** `{tipo_consulta_auto}`")
 
     with st.form("form_atencion"):
-      st.write("Evolución y Diagnóstico")
+      st.write("Evolución, Diagnóstico y Receta")
       motivo = st.text_area("Motivo de Consulta")
       diagnostico = st.text_area("Diagnóstico Clínico")
       receta = st.text_area("Tratamiento / Receta Médica")
@@ -236,47 +258,46 @@ elif choice == "🩺 Consulta Médica (Historial)":
       if finalizar:
         conn = sqlite3.connect("clinica.db", check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO historial (cedula_paciente, fecha_atencion, medico_atn, motivo, diagnostico, receta) VALUES (?, ?, ?, ?, ?, ?)",
-                       (cedula_paciente, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state['user_name'], motivo, diagnostico, receta))
+        cursor.execute("""
+            INSERT INTO historial (cedula_paciente, fecha_atencion, medico_atn, tipo_consulta, motivo, diagnostico, receta) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (cedula_paciente, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state['user_name'], tipo_consulta_auto, motivo, diagnostico, receta))
         conn.commit()
         conn.close()
-        st.success("¡Atención guardada en el historial clínico del paciente!")
+        st.success(f"¡Atención guardada correctamente con código {tipo_consulta_auto}!")
+        st.rerun()
 
     st.divider()
     st.subheader("Historial de Consultas Anteriores")
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT fecha_atencion, medico_atn, motivo, diagnostico, receta FROM historial WHERE cedula_paciente = ? ORDER BY id DESC", (cedula_paciente,))
+    cursor.execute("SELECT fecha_atencion, medico_atn, tipo_consulta, motivo, diagnostico, receta FROM historial WHERE cedula_paciente = ? ORDER BY id DESC", (cedula_paciente,))
     historicos = cursor.fetchall()
     conn.close()
 
     if historicos:
       for h in historicos:
-        with st.expander(f"Fecha: {h[0]} | Atendido por: {h[1]}"):
-          st.write(f"**Motivo:** {h[2]}")
-          st.write(f"**Diagnóstico:** {h[3]}")
-          st.write(f"**Receta:** {h[4]}")
+        with st.expander(f"Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
+          st.write(f"**Motivo:** {h[3]}")
+          st.write(f"**Diagnóstico:** {h[4]}")
+          st.write(f"**Receta:** {h[5]}")
     else:
-      st.info("No hay registros previos para este paciente.")
+      st.info("No hay registros previos para este paciente. Esta será su primera consulta (C1).")
   else:
     st.warning("No hay pacientes registrados.")
 
-# --- MÓDULO: RESPALDO EN EXCEL ---
+# --- MÓDULO: RESPALDO Y DATOS ---
 elif choice in ["📥 Respaldo y Datos"]:
-  st.subheader("Respaldo y Reportes en Excel")
-  st.write("Genera y descarga un archivo de Excel (`.xlsx`) con tres pestañas: **Pacientes**, **Citas** e **Historial Médico**.")
+  st.subheader("Respaldo y Reportes en Excel - Medisuport")
+  st.write("Genera y descarga un archivo de Excel (`.xlsx`) con toda la información de la clínica.")
 
   if st.button("Generar Reporte Excel"):
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
-    
-    # Extraer las tablas usando Pandas
     df_pacientes = pd.read_sql_query("SELECT * FROM pacientes", conn)
     df_citas = pd.read_sql_query("SELECT * FROM citas", conn)
     df_historial = pd.read_sql_query("SELECT * FROM historial", conn)
-    
     conn.close()
 
-    # Escribir a un archivo de Excel en memoria usando openpyxl
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
       df_pacientes.to_excel(writer, sheet_name='Pacientes', index=False)
@@ -287,8 +308,8 @@ elif choice in ["📥 Respaldo y Datos"]:
 
     st.success("¡Reporte generado con éxito!")
     st.download_button(
-        label="📥 Descargar Reporte en Excel (.xlsx)",
+        label="📥 Descargar Reporte Medisuport (.xlsx)",
         data=excel_data,
-        file_name=f"reporte_clinica_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+        file_name=f"medisuport_reporte_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
