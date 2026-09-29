@@ -7,14 +7,9 @@ import streamlit as st
 
 
 def init_connection():
-  # Si configuras tu st.secrets["DATABASE_URL"], lo leerá de ahí automáticamente.
-  # Si prefieres ponerlo directo temporalmente, usa la cadena entre comillas.
-  db_url = (
-      st.secrets["DATABASE_URL"]
-      if "DATABASE_URL" in st.secrets
-      else "postgresql://postgres:R3ratoncitos@db.vktnksyxgtgphohpjmke.supabase.co:5432/postgres"
+  return psycopg2.connect(
+      "postgresql://postgres:R3ratoncitos@db.vktnksyxgtgphohpjmke.supabase.co:5432/postgres"
   )
-  return psycopg2.connect(db_url)
 
 
 # Conexión persistente con caché de Streamlit
