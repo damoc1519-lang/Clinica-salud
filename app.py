@@ -1,5 +1,6 @@
 from datetime import datetime
 import os
+import io
 sqlite3 = __import__("sqlite3")
 pd = __import__("pandas")
 st = __import__("streamlit")
@@ -260,15 +261,34 @@ elif choice == "🩺 Consulta Médica (Historial)":
   else:
     st.warning("No hay pacientes registrados.")
 
-# --- MÓDULO: RESPALDO ---
+# --- MÓDULO: RESPALDO EN EXCEL ---
 elif choice in ["📥 Respaldo y Datos"]:
-  st.subheader("Respaldo de Base de Datos")
-  st.write("Descarga una copia de seguridad completa del sistema.")
-  if os.path.exists("clinica.db"):
-    with open("clinica.db", "rb") as file:
-      st.download_button(
-          label="📥 Descargar Base de Datos Completa (.db)",
-          data=file,
-          file_name=f"clinica_respaldo_{datetime.now().strftime('%Y-%m-%d')}.db",
-          mime="application/octet-stream"
-      )
+  st.subheader("Respaldo y Reportes en Excel")
+  st.write("Genera y descarga un archivo de Excel (`.xlsx`) con tres pestañas: **Pacientes**, **Citas** e **Historial Médico**.")
+
+  if st.button("Generar Reporte Excel"):
+    conn = sqlite3.connect("clinica.db", check_same_thread=False)
+    
+    # Extraer las tablas usando Pandas
+    df_pacientes = pd.read_sql_query("SELECT * FROM pacientes", conn)
+    df_citas = pd.read_sql_query("SELECT * FROM citas", conn)
+    df_historial = pd.read_sql_query("SELECT * FROM historial", conn)
+    
+    conn.close()
+
+    # Escribir a un archivo de Excel en memoria usando openpyxl
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+      df_pacientes.to_excel(writer, sheet_name='Pacientes', index=False)
+      df_citas.to_excel(writer, sheet_name='Citas', index=False)
+      df_historial.to_excel(writer, sheet_name='Historial', index=False)
+    
+    excel_data = output.getvalue()
+
+    st.success("¡Reporte generado con éxito!")
+    st.download_button(
+        label="📥 Descargar Reporte en Excel (.xlsx)",
+        data=excel_data,
+        file_name=f"reporte_clinica_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
