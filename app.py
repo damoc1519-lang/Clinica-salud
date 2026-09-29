@@ -52,6 +52,25 @@ def init_db():
             FOREIGN KEY(cedula_paciente) REFERENCES pacientes(cedula)
         )
     """)
+  
+  # Verificación de seguridad para actualizar bases de datos antiguas
+  cursor.execute("PRAGMA table_info(historial)")
+  columnas = [col[1] for col in cursor.fetchall()]
+  if "motivo" not in columnas:
+    cursor.execute("DROP TABLE historial")
+    cursor.execute("""
+            CREATE TABLE historial (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cedula_paciente TEXT,
+                fecha_atencion TEXT,
+                medico_atn TEXT,
+                motivo TEXT,
+                diagnostico TEXT,
+                receta TEXT,
+                FOREIGN KEY(cedula_paciente) REFERENCES pacientes(cedula)
+            )
+        """)
+        
   conn.commit()
   conn.close()
 
@@ -174,7 +193,6 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   if role == "medico":
-    # El médico solo ve sus propias citas
     cursor.execute("SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula WHERE c.medico LIKE ?", (f"%{st.session_state['user_name'].split(' ')[1]}%",))
   else:
     cursor.execute("SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula")
