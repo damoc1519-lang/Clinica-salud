@@ -86,7 +86,7 @@ MEDICOS_ESPECIALIDADES = {
     "Geriatría": ["Dra. Mildred"],
     "Ginecología": ["Dr. Alejandro Argiz", "Dra. Marilyn Martínez"],
     "Logopedia": ["Dra. Osmarie Barbosa"],
-    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dra. Osmarie Barbosa"],
+    "Medicina General": ["Dr. Yoandis Pérez", "Dra. Ailicec Arias", "Dra. Osmarie Barbosa"],
     "Medicina Interna": ["Dr. Ovadiz Pérez"],
     "Neumología": ["Dra. Eva Barbosa"],
     "Neurología": ["Dr. Dayron Douglas Calvo"],
@@ -100,7 +100,7 @@ MEDICOS_ESPECIALIDADES = {
     "Urología": ["Dr. William Fonseca"]
 }
 
-# --- SISTEMA DE AUTENTICACIÓN POR ROLES (TODOS LOS MÉDICOS INCLUIDOS) ---
+# --- SISTEMA DE AUTENTICACIÓN POR ROLES ---
 USERS = {
     "Abigail Ruiz (Secretaria)": {"pass": "sec2026", "role": "secretaria"},
     "Administrador": {"pass": "admin2026", "role": "admin"},
@@ -142,7 +142,7 @@ if "logged_in" not in st.session_state:
 
 if not st.session_state["logged_in"]:
   st.title("🏥 Medisuport - Control de Acceso")
-  st.write("Seleccione su perfil (Secretaría, Administrador o Médico) e ingrese su contraseña para continuar.")
+  st.write("Seleccione su perfil e ingrese su contraseña para continuar.")
   
   with st.form("login_form"):
     selected_user = st.selectbox("Seleccionar Usuario / Rol", list(USERS.keys()))
@@ -280,7 +280,7 @@ elif choice == "📋 Listado de Pacientes":
   else:
     st.info("No hay pacientes registrados en el sistema.")
 
-# --- MÓDULO: AGENDA Y CITAS CON VERIFICACIÓN DE OCUPADO ---
+# --- MÓDULO: AGENDA Y CITAS CON VERIFICACIÓN DE OCUPADO Y LLAVES DINÁMICAS ---
 elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
   st.subheader("Agenda Médica Virtual - Medisuport")
   
@@ -292,20 +292,21 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
     conn.close()
     pacientes_dict = {f"{p[1]} (Cédula: {p[0]})": p[0] for p in pacientes}
 
-    with st.form("form_cita"):
-      st.write("Agendar Nueva Cita (Verificación automática de disponibilidad)")
-      if pacientes_dict:
-        paciente_sel = st.selectbox("Seleccionar Paciente", list(pacientes_dict.keys()))
-        cedula_act = pacientes_dict[paciente_sel]
-      else:
-        st.warning("Debe registrar pacientes primero.")
-        cedula_act = ""
+    # Contenedor fuera del formulario para permitir actualización dinámica de médicos según la especialidad
+    st.write("Agendar Nueva Cita (Verificación automática de disponibilidad)")
+    if pacientes_dict:
+      paciente_sel = st.selectbox("Seleccionar Paciente", list(pacientes_dict.keys()), key="select_paciente_cita")
+      cedula_act = pacientes_dict[paciente_sel]
+    else:
+      st.warning("Debe registrar pacientes primero.")
+      cedula_act = ""
 
-      # Selección de Especialidad y Médico según el reporte institucional
-      especialidad_sel = st.selectbox("Especialidad Médica", list(MEDICOS_ESPECIALIDADES.keys()))
-      medicos_disponibles = MEDICOS_ESPECIALIDADES[especialidad_sel]
-      medico_sel = st.selectbox("Médico Tratante", medicos_disponibles)
+    # Selección de Especialidad con key para refrescar automáticamente los médicos
+    especialidad_sel = st.selectbox("Especialidad Médica", list(MEDICOS_ESPECIALIDADES.keys()), key="select_especialidad_cita")
+    medicos_disponibles = MEDICOS_ESPECIALIDADES[especialidad_sel]
+    medico_sel = st.selectbox("Médico Tratante", medicos_disponibles, key="select_medico_cita")
 
+    with st.form("form_cita_real"):
       col1, col2 = st.columns(2)
       with col1:
         fecha_cita = st.date_input("Fecha de la Cita", datetime.now())
@@ -346,7 +347,6 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   if role == "medico":
-    # Filtrar citas para el médico logueado extrayendo el apellido/nombre del usuario actual
     nombre_sesion = st.session_state['user_name']
     cursor.execute("""
         SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad 
