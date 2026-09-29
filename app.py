@@ -200,36 +200,36 @@ role = st.session_state["user_role"]
 
 if role == "secretaria":
   menu = [
-      "👤 Registrar Paciente", 
-      "🔍 Buscar y Gestionar Pacientes", 
-      "📋 Listado de Pacientes", 
-      "📅 Disponibilidad de Médicos",
-      "📅 Agenda y Citas", 
-      "📥 Respaldo y Datos"
+      "Registrar Paciente", 
+      "Buscar y Gestionar Pacientes", 
+      "Listado de Pacientes", 
+      "Disponibilidad de Medicos",
+      "Agenda y Citas", 
+      "Respaldo y Datos"
   ]
 elif role == "medico":
   menu = [
-      "🔍 Buscar y Gestionar Pacientes", 
-      "📋 Listado de Pacientes", 
-      "📅 Disponibilidad de Médicos",
-      "📅 Ver Agenda de Citas",
-      "🩺 Consulta Médica (Historial)"
+      "Buscar y Gestionar Pacientes", 
+      "Listado de Pacientes", 
+      "Disponibilidad de Medicos",
+      "Ver Agenda de Citas",
+      "Consulta Medica (Historial)"
   ]
 else:  # Admin
   menu = [
-      "👤 Registrar Paciente", 
-      "🔍 Buscar y Gestionar Pacientes", 
-      "📋 Listado de Pacientes", 
-      "📅 Disponibilidad de Médicos",
-      "📅 Agenda y Citas", 
-      "🩺 Consulta Médica (Historial)", 
-      "📥 Respaldo y Datos"
+      "Registrar Paciente", 
+      "Buscar y Gestionar Pacientes", 
+      "Listado de Pacientes", 
+      "Disponibilidad de Medicos",
+      "Agenda y Citas", 
+      "Consulta Medica (Historial)", 
+      "Respaldo y Datos"
   ]
 
 choice = st.sidebar.selectbox("Seleccione opción", menu)
 
 # --- MÓDULO 1: REGISTRAR PACIENTE ---
-if choice == "👤 Registrar Paciente":
+if choice == "Registrar Paciente":
   st.subheader("➕ Registro de Nuevo Paciente - Medisuport")
   with st.form("form_paciente"):
     st.write("### Datos de Identificación y Contacto")
@@ -314,7 +314,7 @@ def generar_documento_word(info_p, visitas, codigo_estado, historial_p):
   p_info.add_run("• Origen de Registro: ").bold = True
   p_info.add_run(f"{info_p[10] if len(info_p) > 10 else 'N/A'}\n")
   p_info.add_run("• Resumen de Visitas: ").bold = True
-  p_info.add_run(f"Total de Atenciones: {visitas}  (Clasificación Actual: {codigo_estado})\n")
+  p_info.add_run(f"Total de Atenciones: {visitas}  (Clasificación Actual: {codigo_estado}\n)")
 
   doc.add_paragraph("-------------------------------------------------------------------------------------------------------------")
 
@@ -355,7 +355,7 @@ def generar_documento_word(info_p, visitas, codigo_estado, historial_p):
   return file_stream.getvalue()
 
 # --- MÓDULO 2: BUSCAR Y GESTIONAR PACIENTES ---
-elif choice == "🔍 Buscar y Gestionar Pacientes":
+elif choice == "Buscar y Gestionar Pacientes":
   st.subheader("🔍 Ficha Clínica y Búsqueda de Pacientes")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
@@ -433,7 +433,7 @@ elif choice == "🔍 Buscar y Gestionar Pacientes":
     st.info("No hay pacientes registrados en el sistema.")
 
 # --- MÓDULO 3: LISTADO GENERAL DE PACIENTES ---
-elif choice == "📋 Listado de Pacientes":
+elif choice == "Listado de Pacientes":
   st.subheader("📋 Base de Datos General de Pacientes")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   df_p = pd.read_sql_query("SELECT cedula, nombre, sexo, telefono, correo, prevision, origen FROM pacientes", conn)
@@ -457,7 +457,7 @@ elif choice == "📋 Listado de Pacientes":
     st.info("No hay pacientes registrados.")
 
 # --- NUEVO MÓDULO: DISPONIBILIDAD DE MÉDICOS ---
-elif choice == "📅 Disponibilidad de Médicos":
+elif choice == "Disponibilidad de Medicos":
   st.subheader("📅 Consulta de Disponibilidad y Horarios de Médicos")
   st.write("Seleccione una especialidad o revise la disponibilidad institucional por días de la semana y horarios.")
   
@@ -476,8 +476,8 @@ elif choice == "📅 Disponibilidad de Médicos":
   df_dispo = pd.DataFrame(data_dispo)
   st.dataframe(df_dispo, use_container_width=True)
 
-# --- MÓDULO 4: AGENDA Y CITAS (CON REAGENDAMIENTO Y VENCIMIENTO ISSFA) ---
-elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
+# --- MÓDULO 4: AGENDA Y CITAS ---
+elif choice in ["Agenda y Citas", "Ver Agenda de Citas"]:
   st.subheader("📅 Agenda Médica Virtual e Institucional")
   
   if role in ["secretaria", "admin"]:
@@ -499,7 +499,6 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
     especialidad_sel = st.selectbox("Especialidad Médica", list(MEDICOS_ESPECIALIDADES.keys()), key="select_especialidad_cita")
     medicos_disponibles = MEDICOS_ESPECIALIDADES[especialidad_sel]
     
-    # Mostrar días y horarios del médico seleccionado para guiar a la secretaria
     medico_sel = st.selectbox("Médico Tratante", medicos_disponibles, key="select_medico_cita")
     info_med = MEDICOS_INFO[medico_sel]
     st.info(f"💡 **Disponibilidad configurada para {medico_sel}:** {info_med['dias']} en horario de {info_med['horas']}.")
@@ -527,7 +526,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
         conn.close()
 
         if conf_count > 0:
-          st.error(f"❌ El/La Dr(a). {medico_sel} ya tiene una cita agendada a esa hora y fecha exactas[cite: 8].")
+          st.error(f"❌ El/La Dr(a). {medico_sel} ya tiene una cita agendada a esa hora y fecha exactas.")
         else:
           conn = sqlite3.connect("clinica.db", check_same_thread=False)
           cursor = conn.cursor()
@@ -537,7 +536,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
           """, (cedula_act, str_fecha, str_hora, medico_sel, especialidad_sel, str_venc, "Agendada", observaciones))
           conn.commit()
           conn.close()
-          st.success(f"✅ ¡Cita agendada con éxito para el Dr(a). {medico_sel} el {str_fecha} a las {str_hora}[cite: 8]!")
+          st.success(f"✅ ¡Cita agendada con éxito para el Dr(a). {medico_sel} el {str_fecha} a las {str_hora}!")
     st.divider()
 
   st.subheader("📋 Listado y Gestión de Citas (Reagendamientos y Estado)")
@@ -552,7 +551,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
         FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula 
         WHERE c.medico = ?
     """, (doctor_limpio,))
-    st.info(f"Mostrando únicamente las citas asignadas a **{doctor_limpio}**[cite: 8].")
+    st.info(f"Mostrando únicamente las citas asignadas a **{doctor_limpio}**.")
   else:
     cursor.execute("""
         SELECT c.id, c.fecha, c.hora, p.nombre, c.medico, c.especialidad, c.vencimiento_issfa, c.estado, c.observaciones 
@@ -599,7 +598,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
               """, (str(nueva_fecha), str(nueva_hora), str(nuevo_venc), "Reagendada", motivo_reagenda, id_cita_sel))
               conn.commit()
               conn.close()
-              st.success("¡Cita reagendada con éxito y registrada en el sistema[cite: 8]!")
+              st.success("¡Cita reagendada con éxito y registrada en el sistema!")
               st.rerun()
 
           if st.button("🗑️ Cancelar esta Cita por Completo", type="primary"):
@@ -614,7 +613,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
     st.info("No hay citas registradas.")
 
 # --- MÓDULO 5: CONSULTA MÉDICA E HISTORIAL ---
-elif choice == "🩺 Consulta Médica (Historial)":
+elif choice in ["Consulta Medica (Historial)", "Consulta Médica (Historial)"]:
   st.subheader("🩺 Atención Médica y Registro Clínico - Medisuport")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
@@ -721,7 +720,7 @@ elif choice == "🩺 Consulta Médica (Historial)":
     st.warning("No hay pacientes registrados.")
 
 # --- MÓDULO 6: RESPALDO Y DATOS ---
-elif choice in ["📥 Respaldo y Datos"]:
+elif choice == "Respaldo y Datos":
   st.subheader("📥 Respaldo y Reportes en Excel - Medisuport")
   st.write("Genera y descarga un archivo de Excel (`.xlsx`) con toda la información general de la clínica.")
 
