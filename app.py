@@ -12,7 +12,7 @@ st = __import__("streamlit")
 # --- CONFIGURACIÓN DE CONEXIÓN A SUPABASE ---
 def init_connection():
     return psycopg2.connect(
-        "postgresql://postgres.vktnksyxgtgphohpjmke:R3ratoncitos@aws-0-us-west-2.pooler.supabase.co:5432/postgres"
+        "postgresql://postgres.vktnksyxgtgphohpjmke:R3ratoncitos@aws-0-us-west-2.pooler.supabase.co:6543/postgres"
     )
 
 @st.cache_resource
