@@ -86,7 +86,7 @@ MEDICOS_ESPECIALIDADES = {
     "Geriatría": ["Dra. Mildred"],
     "Ginecología": ["Dr. Alejandro Argiz", "Dra. Marilyn Martínez"],
     "Logopedia": ["Dra. Osmarie Barbosa"],
-    "Medicina General": ["Dr. Yoandis Pérez", "Dra. Ailicec Arias", "Dra. Osmarie Barbosa"],
+    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dra. Osmarie Barbosa"],
     "Medicina Interna": ["Dr. Ovadiz Pérez"],
     "Neumología": ["Dra. Eva Barbosa"],
     "Neurología": ["Dr. Dayron Douglas Calvo"],
@@ -172,37 +172,89 @@ role = st.session_state["user_role"]
 if role == "secretaria":
   menu = ["👤 Registrar / Buscar Paciente", "📋 Listado de Pacientes", "📅 Agenda y Citas", "📥 Respaldo y Datos"]
 elif role == "medico":
-  menu = ["📋 Listado de Pacientes", "🩺 Consulta Médica (Historial)", "📅 Ver Agenda de Citas"]
+  menu = ["👤 Registrar / Buscar Paciente", "📋 Listado de Pacientes", "🩺 Consulta Médica (Historial)", "📅 Ver Agenda de Citas"]
 else:  # Admin
   menu = ["👤 Registrar / Buscar Paciente", "📋 Listado de Pacientes", "📅 Agenda y Citas", "🩺 Consulta Médica (Historial)", "📥 Respaldo y Datos"]
 
 choice = st.sidebar.selectbox("Seleccione opción", menu)
 
-# --- MÓDULO: PACIENTES (REGISTRAR) ---
+# --- MÓDULO: REGISTRAR Y BUSCAR PACIENTE ---
 if choice == "👤 Registrar / Buscar Paciente":
-  st.subheader("Gestión y Registro de Pacientes - Medisuport")
-  with st.form("form_paciente"):
-    cedula = st.text_input("Número de Cédula")
-    nombre = st.text_input("Nombre Completo del Paciente")
-    telefono = st.text_input("Teléfono / Celular")
-    f_nac = st.date_input("Fecha de Nacimiento", datetime(1990, 1, 1))
-    origen = st.selectbox("Origen del Paciente", ["Propio de la Clínica", "Prestador Externo ISSFA"])
-    guardar = st.form_submit_button("Guardar Paciente")
-    
-    if guardar:
-      if cedula and nombre:
-        try:
-          conn = sqlite3.connect("clinica.db", check_same_thread=False)
-          cursor = conn.cursor()
-          cursor.execute("INSERT INTO pacientes (cedula, nombre, telefono, fecha_nacimiento, origen) VALUES (?, ?, ?, ?, ?)",
-                         (cedula, nombre, telefono, str(f_nac), origen))
-          conn.commit()
-          conn.close()
-          st.success(f"Paciente {nombre} registrado con éxito ({origen}).")
-        except sqlite3.IntegrityError:
-          st.error("Error: Ya existe un paciente registrado con esta cédula.")
-      else:
-        st.warning("Complete la cédula y el nombre.")
+  st.subheader("Gestión de Pacientes - Medisuport")
+  
+  tab1, tab2 = st.tabs(["➕ Registrar Nuevo Paciente", "🔍 Buscar Paciente por Cédula"])
+  
+  with tab1:
+    with st.form("form_paciente"):
+      cedula = st.text_input("Número de Cédula")
+      nombre = st.text_input("Nombre Completo del Paciente")
+      telefono = st.text_input("Teléfono / Celular")
+      f_nac = st.date_input("Fecha de Nacimiento", datetime(1990, 1, 1))
+      origen = st.selectbox("Origen del Paciente", ["Propio de la Clínica", "Prestador Externo ISSFA"])
+      guardar = st.form_submit_button("Guardar Paciente")
+      
+      if guardar:
+        if cedula and nombre:
+          try:
+            conn = sqlite3.connect("clinica.db", check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO pacientes (cedula, nombre, telefono, fecha_nacimiento, origen) VALUES (?, ?, ?, ?, ?)",
+                           (cedula, nombre, telefono, str(f_nac), origen))
+            conn.commit()
+            conn.close()
+            st.success(f"Paciente {nombre} registrado con éxito ({origen}).")
+          except sqlite3.IntegrityError:
+            st.error("Error: Ya existe un paciente registrado con esta cédula.")
+        else:
+          st.warning("Complete la cédula y el nombre.")
+
+  with tab2:
+    st.write("Ingrese o seleccione el número de cédula para consultar los datos del paciente.")
+    conn = sqlite3.connect("clinica.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT cedula, nombre FROM pacientes")
+    pacientes_db = cursor.fetchall()
+    conn.close()
+
+    if pacientes_db:
+      opciones_busqueda = {f"{p[1]} (Cédula: {p[0]})": p[0] for p in pacientes_db}
+      paciente_elegido = st.selectbox("Seleccione paciente o escriba", list(opciones_busqueda.keys()))
+      cedula_buscar = opciones_busqueda[paciente_elegido]
+
+      if st.button("Consultar Paciente"):
+        conn = sqlite3.connect("clinica.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM pacientes WHERE cedula = ?", (cedula_buscar,))
+        info_p = cursor.fetchone()
+
+        cursor.execute("SELECT COUNT(*) FROM historial WHERE cedula_paciente = ?", (cedula_buscar,))
+        visitas = cursor.fetchone()[0]
+        codigo_estado = "C1" if visitas == 0 else "SUB"
+
+        cursor.execute("SELECT fecha_atencion, medico_atn, tipo_consulta, motivo, diagnostico, receta FROM historial WHERE cedula_paciente = ?", (cedula_buscar,))
+        historial_p = cursor.fetchall()
+        conn.close()
+
+        if info_p:
+          st.success("¡Paciente encontrado!")
+          st.write(f"**Nombre:** {info_p[2]}")
+          st.write(f"**Cédula:** {info_p[1]}")
+          st.write(f"**Teléfono:** {info_p[3]}")
+          st.write(f"**Fecha de Nacimiento:** {info_p[4]}")
+          st.write(f"**Origen:** {info_p[5] if len(info_p) > 5 and info_p[5] else 'Propio de la Clínica'}")
+          st.info(f"📊 **Total de visitas previas:** {visitas} | **Código Actual:** `{codigo_estado}`")
+
+          if historial_p:
+            st.write("### Historial de Atenciones Clínicas")
+            for h in historial_p:
+              with st.expander(f"Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
+                st.write(f"**Motivo:** {h[3]}")
+                st.write(f"**Diagnóstico:** {h[4]}")
+                st.write(f"**Receta:** {h[5]}")
+          else:
+            st.warning("Este paciente no tiene atenciones previas registradas (Le corresponde código C1).")
+    else:
+      st.info("No hay pacientes registrados en el sistema todavía.")
 
 # --- MÓDULO: LISTADO Y CONTROL DE PACIENTES CON C1 / SUB ---
 elif choice == "📋 Listado de Pacientes":
@@ -292,7 +344,6 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
     conn.close()
     pacientes_dict = {f"{p[1]} (Cédula: {p[0]})": p[0] for p in pacientes}
 
-    # Contenedor fuera del formulario para permitir actualización dinámica de médicos según la especialidad
     st.write("Agendar Nueva Cita (Verificación automática de disponibilidad)")
     if pacientes_dict:
       paciente_sel = st.selectbox("Seleccionar Paciente", list(pacientes_dict.keys()), key="select_paciente_cita")
@@ -301,7 +352,6 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
       st.warning("Debe registrar pacientes primero.")
       cedula_act = ""
 
-    # Selección de Especialidad con key para refrescar automáticamente los médicos
     especialidad_sel = st.selectbox("Especialidad Médica", list(MEDICOS_ESPECIALIDADES.keys()), key="select_especialidad_cita")
     medicos_disponibles = MEDICOS_ESPECIALIDADES[especialidad_sel]
     medico_sel = st.selectbox("Médico Tratante", medicos_disponibles, key="select_medico_cita")
@@ -319,7 +369,6 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
         str_fecha = str(fecha_cita)
         str_hora = str(hora_cita)
         
-        # VERIFICAR SI EL MÉDICO YA TIENE OCUPADO ESE HORARIO
         conn = sqlite3.connect("clinica.db", check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("""
