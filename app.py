@@ -8,7 +8,7 @@ import streamlit as st
 
 def init_connection():
   return psycopg2.connect(
-      "postgresql://postgres:R3ratoncitos@db.vktnksyxgtgphohpjmke.supabase.co:5432/postgres"
+      "postgresql://postgres.vktnksyxgtgphohpjmke:R3ratoncitos@aws-0-us-west-2.pooler.supabase.co:6543/postgres"
   )
 
 
