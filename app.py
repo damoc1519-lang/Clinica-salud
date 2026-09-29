@@ -220,11 +220,11 @@ st.sidebar.divider()
 role = st.session_state["user_role"]
 
 if role == "secretaria":
-    menu = ["Registrar Paciente", "Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Agendamiento Citas", "Respaldo y Datos"]
+    menu = ["Registrar Paciente", "Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Agendamiento de Citas", "Respaldo y Datos"]
 elif role == "medico":
     menu = ["Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Ver Agenda de Citas", "Consulta Medica (Historial)"]
 else:
-    menu = ["Registrar Paciente", "Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Agendamiento Citas", "Consulta Medica (Historial)", "Respaldo y Datos"]
+    menu = ["Registrar Paciente", "Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Agendamiento de Citas", "Consulta Medica (Historial)", "Respaldo y Datos"]
 
 choice = st.sidebar.selectbox("Seleccione opción", menu)
 
@@ -478,7 +478,6 @@ elif choice == "Disponibilidad de Medicos":
     df_dispo = pd.DataFrame(data_dispo)
     st.dataframe(df_dispo, use_container_width=True)
 
-    # Permitir a la secretaria o admin actualizar la disponibilidad en tiempo real
     if role in ["secretaria", "admin"]:
         st.divider()
         st.write("### 🛠️ Actualizar Disponibilidad Diaria del Médico")
@@ -504,9 +503,9 @@ elif choice == "Disponibilidad de Medicos":
                 st.success(f"✅ ¡Disponibilidad actualizada con éxito para {medico_a_editar}!")
                 st.rerun()
 
-# --- MÓDULO 4: AGENDAMIENTO CITAS ---
-elif choice in ["AGENDAMIENTO CITAS", "Ver Agenda de Citas"]:
-    st.subheader("📅 Agenda Médica Virtual e Institucional")
+# --- MÓDULO 4: AGENDAMIENTO DE CITAS ---
+elif choice in ["Agendamiento de Citas", "Ver Agenda de Citas"]:
+    st.subheader("📅 Agendamiento de Citas Médicas e Institucionales")
     
     MEDICOS_INFO = obtener_medicos_info()
     MEDICOS_ESPECIALIDADES = obtener_medicos_especialidades()
