@@ -100,12 +100,39 @@ MEDICOS_ESPECIALIDADES = {
     "Urología": ["Dr. William Fonseca"]
 }
 
-# --- SISTEMA DE AUTENTICACIÓN POR ROLES ---
+# --- SISTEMA DE AUTENTICACIÓN POR ROLES (TODOS LOS MÉDICOS INCLUIDOS) ---
 USERS = {
     "Abigail Ruiz (Secretaria)": {"pass": "sec2026", "role": "secretaria"},
+    "Administrador": {"pass": "admin2026", "role": "admin"},
+    # Médicos
+    "Dra. Kanie Collado (Alergología)": {"pass": "med123", "role": "medico"},
+    "Dr. Norberto Carballosa (Anestesiología)": {"pass": "med123", "role": "medico"},
+    "Dra. Lisset Alfonso (Cardiología)": {"pass": "med123", "role": "medico"},
+    "Dr. Miguel Mederos (Dermatología)": {"pass": "med123", "role": "medico"},
+    "Dr. Frank Medina (Endocrinología)": {"pass": "med123", "role": "medico"},
+    "Dr. Miguel Marrero (Endocrinología)": {"pass": "med123", "role": "medico"},
+    "Dra. Gabriela Vélez (Endocrinología)": {"pass": "med123", "role": "medico"},
+    "Dr. Pavel Mili (Fisiatría)": {"pass": "med123", "role": "medico"},
+    "Dr. Yunio Torres (Fisiatría)": {"pass": "med123", "role": "medico"},
+    "Dr. Frank Pérez (Gastroenterología)": {"pass": "med123", "role": "medico"},
+    "Dra. Mildred (Geriatría)": {"pass": "med123", "role": "medico"},
+    "Dr. Alejandro Argiz (Ginecología)": {"pass": "med123", "role": "medico"},
+    "Dra. Marilyn Martínez (Ginecología)": {"pass": "med123", "role": "medico"},
+    "Dra. Osmarie Barbosa (Logopedia / Med. General)": {"pass": "med123", "role": "medico"},
     "Dr. Yoandis Pérez (Medicina General)": {"pass": "med123", "role": "medico"},
-    "Dra. Ailicec Arias (Pediatría / Med. General)": {"pass": "med456", "role": "medico"},
-    "Administrador": {"pass": "admin2026", "role": "admin"}
+    "Dra. Ailicec Arias (Pediatría / Med. General)": {"pass": "med123", "role": "medico"},
+    "Dr. Ovadiz Pérez (Medicina Interna)": {"pass": "med123", "role": "medico"},
+    "Dra. Eva Barbosa (Neumología)": {"pass": "med123", "role": "medico"},
+    "Dr. Dayron Douglas Calvo (Neurología)": {"pass": "med123", "role": "medico"},
+    "Lcdo. Andrés Hidrobo (Nutrición)": {"pass": "med123", "role": "medico"},
+    "Dr. Fernando Enríquez (Otorrinolaringología)": {"pass": "med123", "role": "medico"},
+    "Dra. María Cristina Torres (Pediatría)": {"pass": "med123", "role": "medico"},
+    "Lcdo. Jerson Rodríguez (Psicología)": {"pass": "med123", "role": "medico"},
+    "Dra. Yulca Rosales (Psiquiatría)": {"pass": "med123", "role": "medico"},
+    "Dr. Dennis Pucha (Reumatología)": {"pass": "med123", "role": "medico"},
+    "Dr. Rafael Echavarría (Reumatología)": {"pass": "med123", "role": "medico"},
+    "Dr. Antonio Leal (Traumatología)": {"pass": "med123", "role": "medico"},
+    "Dr. William Fonseca (Urología)": {"pass": "med123", "role": "medico"}
 }
 
 if "logged_in" not in st.session_state:
@@ -115,7 +142,7 @@ if "logged_in" not in st.session_state:
 
 if not st.session_state["logged_in"]:
   st.title("🏥 Medisuport - Control de Acceso")
-  st.write("Seleccione su perfil e ingrese su contraseña para continuar.")
+  st.write("Seleccione su perfil (Secretaría, Administrador o Médico) e ingrese su contraseña para continuar.")
   
   with st.form("login_form"):
     selected_user = st.selectbox("Seleccionar Usuario / Rol", list(USERS.keys()))
@@ -319,7 +346,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   if role == "medico":
-    # Filtrar citas para el médico logueado
+    # Filtrar citas para el médico logueado extrayendo el apellido/nombre del usuario actual
     nombre_sesion = st.session_state['user_name']
     cursor.execute("""
         SELECT c.fecha, c.hora, p.nombre, c.medico, c.especialidad 
