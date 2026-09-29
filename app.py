@@ -22,7 +22,6 @@ def init_db():
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   
-  # Tabla de pacientes
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS pacientes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +50,6 @@ def init_db():
         )
     """)
     
-  # Tabla de historial clínico
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS historial (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,7 +74,7 @@ def init_db():
         )
     """)
   
-  # Verificaciones y migración automática de columnas en pacientes
+  # Migración automática de columnas
   cursor.execute("PRAGMA table_info(pacientes)")
   p_cols = [col[1] for col in cursor.fetchall()]
   for col_name, col_type in [
@@ -86,7 +84,6 @@ def init_db():
     if col_name not in p_cols:
       cursor.execute(f"ALTER TABLE pacientes ADD COLUMN {col_name} {col_type}")
 
-  # Verificaciones y migración automática de columnas en historial
   cursor.execute("PRAGMA table_info(historial)")
   h_cols = [col[1] for col in cursor.fetchall()]
   for col_name, col_type in [
@@ -263,7 +260,7 @@ if choice == "👤 Registrar Paciente":
       else:
         st.warning("Complete al menos el número de documento y el nombre completo.")
 
-# --- MÓDULO 2: BUSCAR Y GESTIONAR PACIENTES ---
+# --- MÓDULO 2: BUSCAR Y GESTIONAR PACIENTES (CON DESCARGA DE HISTORIA CLÍNICA) ---
 elif choice == "🔍 Buscar y Gestionar Pacientes":
   st.subheader("🔍 Ficha Clínica y Búsqueda de Pacientes")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
@@ -301,6 +298,51 @@ elif choice == "🔍 Buscar y Gestionar Pacientes":
         st.write(f"**Documento:** {info_p[1]} | **Teléfono:** {info_p[6]} | **Correo:** {info_p[7]}")
         st.write(f"**Domicilio:** {info_p[5]} | **Ocupación:** {info_p[8]} | **Sistema de Salud:** {info_p[9]}")
         st.info(f"📊 **Total de Atenciones Previas:** {visitas} | **Código Actual:** `{codigo_estado}`")
+
+        # --- CONSTRUCCIÓN DEL REPORTE PARA DESCARGAR ---
+        texto_historia = f"""==================================================
+        CLÍNICA MEDISUPORT - HISTORIA CLÍNICA COMPLETO
+==================================================
+DATOS DEL PACIENTE:
+- Nombre: {info_p[2]}
+- Documento / Cédula: {info_p[1]}
+- Sexo: {info_p[3]}
+- Fecha de Nacimiento: {info_p[4]}
+- Domicilio: {info_p[5]}
+- Teléfono: {info_p[6]}
+- Correo: {info_p[7]}
+- Ocupación: {info_p[8]}
+- Sistema de Salud / Previsión: {info_p[9]}
+- Origen: {info_p[10] if len(info_p) > 10 else 'N/A'}
+- Total de Visitas: {visitas} (Código actual: {codigo_estado})
+--------------------------------------------------
+REGISTRO DE ATENCIONES MÉDICAS:
+"""
+        if historial_p:
+          for h in historial_p:
+            texto_historia += f"""
+[Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}]
+- Motivo de Consulta: {h[6]}
+- Enfermedad Actual: {h[7]}
+- Antecedentes Personales: {h[3]}
+- Antecedentes Familiares: {h[4]}
+- Hábitos: {h[5]}
+- Signos Vitales: Peso: {h[8]}kg | Talla: {h[9]}cm | PA: {h[10]} | FC: {h[11]} | IMC: {h[12]}
+- Diagnóstico: {h[13]}
+- Tratamiento y Receta: {h[14]}
+- Exámenes / Estudios: {h[15]}
+--------------------------------------------------
+"""
+        else:
+          texto_historia += "No hay atenciones médicas previas registradas.\n"
+
+        # Botón de descarga directa
+        st.download_button(
+            label="📥 Descargar Historia Clínica Completa (.txt)",
+            data=texto_historia,
+            file_name=f"historia_clinica_{info_p[1]}.txt",
+            mime="text/plain"
+        )
 
         if historial_p:
           st.write("### 📂 Historial de Atenciones Clínicas Anteriores")
