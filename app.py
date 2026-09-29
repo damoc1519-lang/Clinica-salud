@@ -71,8 +71,8 @@ init_db()
 st.title("🏥 Sistema de Gestión y Agenda Médica - Clínica")
 
 menu = [
-    "📅 Agenda y Citas",
     "👤 Registrar / Buscar Paciente",
+    "📅 Agenda y Citas",
     "🩺 Consulta Médica (Historial)",
     "📥 Exportar Datos y Respaldo",
 ]
