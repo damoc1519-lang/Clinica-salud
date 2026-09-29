@@ -1,3 +1,51 @@
+import streamlit as st
+
+# --- CONTROL DE ACCESO (CONTRASEÑA) ---
+# Puedes cambiar "tu_contraseña_secreta" por la clave que quieras darles a tus colegas
+PASSWORD_CORRECTA = "clinica2026"
+
+
+def verificar_password():
+  """Retorna True si el usuario ingresó la contraseña correcta."""
+
+  def password_entered():
+    if st.session_state["password"] == PASSWORD_CORRECTA:
+      st.session_state["password_correct"] = True
+      del st.session_state["password"]  # No guardar la contraseña en memoria
+    else:
+      st.session_state["password_correct"] = False
+
+  if "password_correct" not in st.session_state:
+    # Primera vez que entra, muestra la caja de texto para la clave
+    st.text_input(
+        "Contraseña de Acceso",
+        type="password",
+        on_change=password_entered,
+        key="password",
+    )
+    st.warning(
+        "Por favor, ingrese la contraseña autorizada para acceder al sistema"
+        " de la clínica."
+    )
+    return False
+  elif not st.session_state["password_correct"]:
+    # Contraseña incorrecta, vuelve a pedirla
+    st.text_input(
+        "Contraseña de Acceso",
+        type="password",
+        on_change=password_entered,
+        key="password",
+    )
+    st.error("😕 Contraseña incorrecta. Intente de nuevo.")
+    return False
+  else:
+    # Contraseña correcta, deja pasar a la app
+    return True
+
+
+# Si la contraseña no es correcta, detiene la ejecución aquí mismo
+if not verificar_password():
+  st.stop()
 from datetime import datetime
 import os
 import sqlite3
