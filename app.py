@@ -17,12 +17,12 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- BASE DE DATOS Y TABLAS AMPLIADAS ---
+# --- BASE DE DATOS Y TABLAS AMPLIADAS (CON MIGRACIÓN AUTOMÁTICA) ---
 def init_db():
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   
-  # Tabla de pacientes ampliada con los datos básicos solicitados
+  # Tabla de pacientes
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS pacientes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +51,7 @@ def init_db():
         )
     """)
     
-  # Tabla de historial clínico ampliada con antecedentes y registro de atención actual
+  # Tabla de historial clínico
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS historial (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,42 +76,27 @@ def init_db():
         )
     """)
   
-  # Verificaciones de compatibilidad para bases de datos existentes
+  # Verificaciones y migración automática de columnas en pacientes
   cursor.execute("PRAGMA table_info(pacientes)")
   p_cols = [col[1] for col in cursor.fetchall()]
-  if "sexo" not in p_cols:
-    cursor.execute("ALTER TABLE pacientes ADD COLUMN sexo TEXT")
-  if "domicilio" not in p_cols:
-    cursor.execute("ALTER TABLE pacientes ADD COLUMN domicilio TEXT")
-  if "correo" not in p_cols:
-    cursor.execute("ALTER TABLE pacientes ADD COLUMN correo TEXT")
-  if "ocupacion" not in p_cols:
-    cursor.execute("ALTER TABLE pacientes ADD COLUMN ocupacion TEXT")
-  if "prevision" not in p_cols:
-    cursor.execute("ALTER TABLE pacientes ADD COLUMN prevision TEXT")
+  for col_name, col_type in [
+      ("sexo", "TEXT"), ("domicilio", "TEXT"), ("correo", "TEXT"), 
+      ("ocupacion", "TEXT"), ("prevision", "TEXT"), ("origen", "TEXT")
+  ]:
+    if col_name not in p_cols:
+      cursor.execute(f"ALTER TABLE pacientes ADD COLUMN {col_name} {col_type}")
 
+  # Verificaciones y migración automática de columnas en historial
   cursor.execute("PRAGMA table_info(historial)")
   h_cols = [col[1] for col in cursor.fetchall()]
-  if "antecedentes_pers" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN antecedentes_pers TEXT")
-  if "antecedentes_fam" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN antecedentes_fam TEXT")
-  if "habitos" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN habitos TEXT")
-  if "enfermedad_actual" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN enfermedad_actual TEXT")
-  if "peso" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN peso TEXT")
-  if "talla" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN talla TEXT")
-  if "pa" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN pa TEXT")
-  if "fc" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN fc TEXT")
-  if "imc" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN imc TEXT")
-  if "examenes" not in h_cols:
-    cursor.execute("ALTER TABLE historial ADD COLUMN examenes TEXT")
+  for col_name, col_type in [
+      ("tipo_consulta", "TEXT"), ("antecedentes_pers", "TEXT"), ("antecedentes_fam", "TEXT"),
+      ("habitos", "TEXT"), ("motivo", "TEXT"), ("enfermedad_actual", "TEXT"),
+      ("peso", "TEXT"), ("talla", "TEXT"), ("pa", "TEXT"), ("fc", "TEXT"),
+      ("imc", "TEXT"), ("diagnostico", "TEXT"), ("tratamiento", "TEXT"), ("examenes", "TEXT")
+  ]:
+    if col_name not in h_cols:
+      cursor.execute(f"ALTER TABLE historial ADD COLUMN {col_name} {col_type}")
 
   conn.commit()
   conn.close()
@@ -130,7 +115,7 @@ MEDICOS_ESPECIALIDADES = {
     "Geriatría": ["Dra. Mildred"],
     "Ginecología": ["Dr. Alejandro Argiz", "Dra. Marilyn Martínez"],
     "Logopedia": ["Dra. Osmarie Barbosa"],
-    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dra. Osmarie Barbosa"],
+    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dr. Osmarie Barbosa"],
     "Medicina Interna": ["Dr. Ovadiz Pérez"],
     "Neumología": ["Dra. Eva Barbosa"],
     "Neurología": ["Dr. Dayron Douglas Calvo"],
@@ -240,7 +225,7 @@ else:  # Admin
 
 choice = st.sidebar.selectbox("Seleccione opción", menu)
 
-# --- MÓDULO 1: REGISTRAR PACIENTE (DATOS BÁSICOS) ---
+# --- MÓDULO 1: REGISTRAR PACIENTE ---
 if choice == "👤 Registrar Paciente":
   st.subheader("➕ Registro de Nuevo Paciente - Medisuport")
   with st.form("form_paciente"):
