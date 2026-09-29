@@ -86,7 +86,7 @@ MEDICOS_ESPECIALIDADES = {
     "Geriatría": ["Dra. Mildred"],
     "Ginecología": ["Dr. Alejandro Argiz", "Dra. Marilyn Martínez"],
     "Logopedia": ["Dra. Osmarie Barbosa"],
-    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dr. Osmarie Barbosa"],
+    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dra. Osmarie Barbosa"],
     "Medicina Interna": ["Dr. Ovadiz Pérez"],
     "Neumología": ["Dra. Eva Barbosa"],
     "Neurología": ["Dr. Dayron Douglas Calvo"],
@@ -181,8 +181,8 @@ elif role == "medico":
   menu = [
       "🔍 Buscar y Gestionar Pacientes", 
       "📋 Listado de Pacientes", 
-      "🩺 Consulta Médica (Historial)", 
-      "📅 Ver Agenda de Citas"
+      "📅 Ver Agenda de Citas",
+      "🩺 Consulta Médica (Historial)"
   ]
 else:  # Admin
   menu = [
@@ -196,7 +196,7 @@ else:  # Admin
 
 choice = st.sidebar.selectbox("Seleccione opción", menu)
 
-# --- MÓDULO 1: REGISTRAR PACIENTE (EXCLUSIVO) ---
+# --- MÓDULO 1: REGISTRAR PACIENTE ---
 if choice == "👤 Registrar Paciente":
   st.subheader("➕ Registro de Nuevo Paciente - Medisuport")
   with st.form("form_paciente"):
@@ -271,7 +271,6 @@ elif choice == "🔍 Buscar y Gestionar Pacientes":
 
     st.divider()
     
-    # Opción de eliminación independiente de pacientes
     if role in ["secretaria", "admin"]:
       with st.expander("🗑️ Zona de Peligro: Borrar Paciente por Error"):
         st.error("⚠️ Use esta opción únicamente si el paciente fue creado por error. Se borrará su ficha, citas e historial.")
@@ -339,10 +338,11 @@ elif choice == "📋 Listado de Pacientes":
   else:
     st.info("No hay pacientes registrados en el sistema.")
 
-# --- MÓDULO 4: AGENDA Y CITAS (CON OPCIÓN DE MODIFICAR Y ELIMINAR CITAS) ---
+# --- MÓDULO 4: AGENDA Y CITAS (FILTRADA PARA MÉDICOS) ---
 elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
-  st.subheader("📅 Agenda Médica Virtual e Independiente")
+  st.subheader("📅 Agenda Médica Virtual")
   
+  # Si es secretaria o admin, pueden agendar nuevas citas
   if role in ["secretaria", "admin"]:
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
@@ -402,18 +402,24 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
   st.subheader("📋 Listado y Gestión de Citas Registradas")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
+
+  # FILTRAR AGENDA SI EL USUARIO ES UN MÉDICO
   if role == "medico":
     nombre_sesion = st.session_state['user_name']
+    # Extraer el nombre completo del doctor (ej. "Dr. Yoandis Pérez" de "Dr. Yoandis Pérez (Medicina General)")
+    doctor_limpio = nombre_sesion.split(" (")[0]
     cursor.execute("""
         SELECT c.id, c.fecha, c.hora, p.nombre, c.medico, c.especialidad 
         FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula 
-        WHERE c.medico LIKE ?
-    """, (f"%{nombre_sesion.split(' ')[1]}%",))
+        WHERE c.medico = ?
+    """, (doctor_limpio,))
+    st.info(f"Mostrando únicamente las citas asignadas a **{doctor_limpio}**.")
   else:
     cursor.execute("""
         SELECT c.id, c.fecha, c.hora, p.nombre, c.medico, c.especialidad 
         FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula
     """)
+
   citas_data = cursor.fetchall()
   conn.close()
   
@@ -421,14 +427,13 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
     df_citas_view = pd.DataFrame(citas_data, columns=["ID", "Fecha", "Hora", "Paciente", "Médico", "Especialidad"])
     st.dataframe(df_citas_view.drop(columns=["ID"]), use_container_width=True)
 
-    st.divider()
     if role in ["secretaria", "admin"]:
+      st.divider()
       with st.expander("🛠️ Modificar o Cancelar una Cita Médica"):
         citas_dict = {f"Cita ID: {c[0]} | Paciente: {c[3]} | Fecha: {c[1]} {c[2]} | Dr(a). {c[4]}": c[0] for c in citas_data}
         cita_sel_mod = st.selectbox("Seleccione la cita que desea gestionar", list(citas_dict.keys()))
         id_cita_sel = citas_dict[cita_sel_mod]
 
-        # Consultar datos actuales de esa cita específica
         conn = sqlite3.connect("clinica.db", check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("SELECT fecha, hora, medico, especialidad FROM citas WHERE id = ?", (id_cita_sel,))
@@ -463,7 +468,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
             st.success("La cita ha sido eliminada de la agenda.")
             st.rerun()
   else:
-    st.info("No hay citas registradas en el sistema.")
+    st.info("No hay citas registradas en el sistema para mostrar.")
 
 # --- MÓDULO 5: CONSULTA MÉDICA E HISTORIAL ---
 elif choice == "🩺 Consulta Médica (Historial)":
@@ -513,7 +518,7 @@ elif choice == "🩺 Consulta Médica (Historial)":
         st.rerun()
 
     st.divider()
-    st.subheader("Historial de Consultas Anteriores")
+    st.subheader("Historial de Consultas Anteriores del Paciente")
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT fecha_atencion, medico_atn, tipo_consulta, motivo, diagnostico, receta FROM historial WHERE cedula_paciente = ? ORDER BY id DESC", (cedula_paciente,))
@@ -540,7 +545,7 @@ elif choice in ["📥 Respaldo y Datos"]:
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     df_pacientes = pd.read_sql_query("SELECT * FROM pacientes", conn)
     df_citas = pd.read_sql_query("SELECT * FROM citas", conn)
-    df_historial = pd.read_sql_query("SELECT * historial", conn) if False else pd.read_sql_query("SELECT * FROM historial", conn)
+    df_historial = pd.read_sql_query("SELECT * FROM historial", conn)
     conn.close()
 
     output = io.BytesIO()
