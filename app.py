@@ -86,7 +86,7 @@ MEDICOS_ESPECIALIDADES = {
     "Geriatría": ["Dra. Mildred"],
     "Ginecología": ["Dr. Alejandro Argiz", "Dra. Marilyn Martínez"],
     "Logopedia": ["Dra. Osmarie Barbosa"],
-    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dra. Osmarie Barbosa"],
+    "Medicina General": ["Dr. Yoandis Pérez", "Dr. Ailicec Arias", "Dr. Osmarie Barbosa"],
     "Medicina Interna": ["Dr. Ovadiz Pérez"],
     "Neumología": ["Dra. Eva Barbosa"],
     "Neurología": ["Dr. Dayron Douglas Calvo"],
@@ -159,7 +159,7 @@ if not st.session_state["logged_in"]:
         st.error("Contraseña incorrecta. Intente nuevamente.")
   st.stop()
 
-# --- BARRA LATERAL Y NAVEGACIÓN ---
+# --- BARRA LATERAL Y NAVEGACIÓN SEPARADA ---
 st.sidebar.title("Medisuport 🏥")
 st.sidebar.write(f"👤 **Usuario:** {st.session_state['user_name']}")
 if st.sidebar.button("Cerrar Sesión"):
@@ -170,95 +170,112 @@ st.sidebar.divider()
 role = st.session_state["user_role"]
 
 if role == "secretaria":
-  menu = ["👤 Registrar / Buscar Paciente", "📋 Listado de Pacientes", "📅 Agenda y Citas", "📥 Respaldo y Datos"]
+  menu = [
+      "👤 Registrar Paciente", 
+      "🔍 Buscar y Gestionar Pacientes", 
+      "📋 Listado de Pacientes", 
+      "📅 Agenda y Citas", 
+      "📥 Respaldo y Datos"
+  ]
 elif role == "medico":
-  menu = ["👤 Registrar / Buscar Paciente", "📋 Listado de Pacientes", "🩺 Consulta Médica (Historial)", "📅 Ver Agenda de Citas"]
+  menu = [
+      "🔍 Buscar y Gestionar Pacientes", 
+      "📋 Listado de Pacientes", 
+      "🩺 Consulta Médica (Historial)", 
+      "📅 Ver Agenda de Citas"
+  ]
 else:  # Admin
-  menu = ["👤 Registrar / Buscar Paciente", "📋 Listado de Pacientes", "📅 Agenda y Citas", "🩺 Consulta Médica (Historial)", "📥 Respaldo y Datos"]
+  menu = [
+      "👤 Registrar Paciente", 
+      "🔍 Buscar y Gestionar Pacientes", 
+      "📋 Listado de Pacientes", 
+      "📅 Agenda y Citas", 
+      "🩺 Consulta Médica (Historial)", 
+      "📥 Respaldo y Datos"
+  ]
 
 choice = st.sidebar.selectbox("Seleccione opción", menu)
 
-# --- MÓDULO: REGISTRAR Y BUSCAR PACIENTE (CON OPCIÓN DE BORRAR) ---
-if choice == "👤 Registrar / Buscar Paciente":
-  st.subheader("Gestión de Pacientes - Medisuport")
-  
-  tab1, tab2 = st.tabs(["➕ Registrar Nuevo Paciente", "🔍 Buscar y Gestionar Paciente"])
-  
-  with tab1:
-    with st.form("form_paciente"):
-      cedula = st.text_input("Número de Cédula")
-      nombre = st.text_input("Nombre Completo del Paciente")
-      telefono = st.text_input("Teléfono / Celular")
-      f_nac = st.date_input("Fecha de Nacimiento", datetime(1990, 1, 1))
-      origen = st.selectbox("Origen del Paciente", ["Propio de la Clínica", "Prestador Externo ISSFA"])
-      guardar = st.form_submit_button("Guardar Paciente")
-      
-      if guardar:
-        if cedula and nombre:
-          try:
-            conn = sqlite3.connect("clinica.db", check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO pacientes (cedula, nombre, telefono, fecha_nacimiento, origen) VALUES (?, ?, ?, ?, ?)",
-                           (cedula, nombre, telefono, str(f_nac), origen))
-            conn.commit()
-            conn.close()
-            st.success(f"Paciente {nombre} registrado con éxito ({origen}).")
-          except sqlite3.IntegrityError:
-            st.error("Error: Ya existe un paciente registrado con esta cédula.")
+# --- MÓDULO 1: REGISTRAR PACIENTE (EXCLUSIVO) ---
+if choice == "👤 Registrar Paciente":
+  st.subheader("➕ Registro de Nuevo Paciente - Medisuport")
+  with st.form("form_paciente"):
+    cedula = st.text_input("Número de Cédula")
+    nombre = st.text_input("Nombre Completo del Paciente")
+    telefono = st.text_input("Teléfono / Celular")
+    f_nac = st.date_input("Fecha de Nacimiento", datetime(1990, 1, 1))
+    origen = st.selectbox("Origen del Paciente", ["Propio de la Clínica", "Prestador Externo ISSFA"])
+    guardar = st.form_submit_button("Guardar Paciente")
+    
+    if guardar:
+      if cedula and nombre:
+        try:
+          conn = sqlite3.connect("clinica.db", check_same_thread=False)
+          cursor = conn.cursor()
+          cursor.execute("INSERT INTO pacientes (cedula, nombre, telefono, fecha_nacimiento, origen) VALUES (?, ?, ?, ?, ?)",
+                         (cedula, nombre, telefono, str(f_nac), origen))
+          conn.commit()
+          conn.close()
+          st.success(f"¡Paciente {nombre} registrado con éxito ({origen})!")
+        except sqlite3.IntegrityError:
+          st.error("Error: Ya existe un paciente registrado con esta cédula.")
+      else:
+        st.warning("Complete la cédula y el nombre.")
+
+# --- MÓDULO 2: BUSCAR, EDITAR O BORRAR PACIENTES ---
+elif choice == "🔍 Buscar y Gestionar Pacientes":
+  st.subheader("🔍 Búsqueda y Gestión de Pacientes")
+  conn = sqlite3.connect("clinica.db", check_same_thread=False)
+  cursor = conn.cursor()
+  cursor.execute("SELECT cedula, nombre FROM pacientes")
+  pacientes_db = cursor.fetchall()
+  conn.close()
+
+  if pacientes_db:
+    opciones_busqueda = {f"{p[1]} (Cédula: {p[0]})": p[0] for p in pacientes_db}
+    paciente_elegido = st.selectbox("Seleccione Paciente", list(opciones_busqueda.keys()))
+    cedula_buscar = opciones_busqueda[paciente_elegido]
+
+    if st.button("Consultar Ficha del Paciente"):
+      conn = sqlite3.connect("clinica.db", check_same_thread=False)
+      cursor = conn.cursor()
+      cursor.execute("SELECT * FROM pacientes WHERE cedula = ?", (cedula_buscar,))
+      info_p = cursor.fetchone()
+
+      cursor.execute("SELECT COUNT(*) FROM historial WHERE cedula_paciente = ?", (cedula_buscar,))
+      visitas = cursor.fetchone()[0]
+      codigo_estado = "C1" if visitas == 0 else "SUB"
+
+      cursor.execute("SELECT fecha_atencion, medico_atn, tipo_consulta, motivo, diagnostico, receta FROM historial WHERE cedula_paciente = ?", (cedula_buscar,))
+      historial_p = cursor.fetchall()
+      conn.close()
+
+      if info_p:
+        st.success("¡Paciente encontrado!")
+        st.write(f"**Nombre:** {info_p[2]}")
+        st.write(f"**Cédula:** {info_p[1]}")
+        st.write(f"**Teléfono:** {info_p[3]}")
+        st.write(f"**Fecha de Nacimiento:** {info_p[4]}")
+        st.write(f"**Origen:** {info_p[5] if len(info_p) > 5 and info_p[5] else 'Propio de la Clínica'}")
+        st.info(f"📊 **Total de visitas previas:** {visitas} | **Código Actual:** `{codigo_estado}`")
+
+        if historial_p:
+          st.write("### Historial de Atenciones Clínicas")
+          for h in historial_p:
+            with st.expander(f"Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
+              st.write(f"**Motivo:** {h[3]}")
+              st.write(f"**Diagnóstico:** {h[4]}")
+              st.write(f"**Receta:** {h[5]}")
         else:
-          st.warning("Complete la cédula y el nombre.")
+          st.warning("Este paciente no tiene atenciones previas registradas (Le corresponde código C1).")
 
-  with tab2:
-    st.write("Busque un paciente para consultar sus datos, historial o **eliminarlo si fue creado por error**.")
-    conn = sqlite3.connect("clinica.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT cedula, nombre FROM pacientes")
-    pacientes_db = cursor.fetchall()
-    conn.close()
-
-    if pacientes_db:
-      opciones_busqueda = {f"{p[1]} (Cédula: {p[0]})": p[0] for p in pacientes_db}
-      paciente_elegido = st.selectbox("Seleccione paciente", list(opciones_busqueda.keys()))
-      cedula_buscar = opciones_busqueda[paciente_elegido]
-
-      if st.button("Consultar Paciente"):
-        conn = sqlite3.connect("clinica.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM pacientes WHERE cedula = ?", (cedula_buscar,))
-        info_p = cursor.fetchone()
-
-        cursor.execute("SELECT COUNT(*) FROM historial WHERE cedula_paciente = ?", (cedula_buscar,))
-        visitas = cursor.fetchone()[0]
-        codigo_estado = "C1" if visitas == 0 else "SUB"
-
-        cursor.execute("SELECT fecha_atencion, medico_atn, tipo_consulta, motivo, diagnostico, receta FROM historial WHERE cedula_paciente = ?", (cedula_buscar,))
-        historial_p = cursor.fetchall()
-        conn.close()
-
-        if info_p:
-          st.success("¡Paciente encontrado!")
-          st.write(f"**Nombre:** {info_p[2]}")
-          st.write(f"**Cédula:** {info_p[1]}")
-          st.write(f"**Teléfono:** {info_p[3]}")
-          st.write(f"**Fecha de Nacimiento:** {info_p[4]}")
-          st.write(f"**Origen:** {info_p[5] if len(info_p) > 5 and info_p[5] else 'Propio de la Clínica'}")
-          st.info(f"📊 **Total de visitas previas:** {visitas} | **Código Actual:** `{codigo_estado}`")
-
-          if historial_p:
-            st.write("### Historial de Atenciones Clínicas")
-            for h in historial_p:
-              with st.expander(f"Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
-                st.write(f"**Motivo:** {h[3]}")
-                st.write(f"**Diagnóstico:** {h[4]}")
-                st.write(f"**Receta:** {h[5]}")
-          else:
-            st.warning("Este paciente no tiene atenciones previas registradas (Le corresponde código C1).")
-
-      st.divider()
-      # Opción directa de borrado de paciente
-      with st.expander("🗑️ Zona de Peligro: Eliminar este Paciente"):
-        st.error("Si borra este paciente, se eliminarán también sus citas y su historial médico asociado.")
-        if st.button("Borrar Permanentemente a este Paciente", type="primary"):
+    st.divider()
+    
+    # Opción de eliminación independiente de pacientes
+    if role in ["secretaria", "admin"]:
+      with st.expander("🗑️ Zona de Peligro: Borrar Paciente por Error"):
+        st.error("⚠️ Use esta opción únicamente si el paciente fue creado por error. Se borrará su ficha, citas e historial.")
+        if st.button("Eliminar Definitivamente a este Paciente", type="primary"):
           conn = sqlite3.connect("clinica.db", check_same_thread=False)
           cursor = conn.cursor()
           cursor.execute("DELETE FROM historial WHERE cedula_paciente = ?", (cedula_buscar,))
@@ -268,12 +285,12 @@ if choice == "👤 Registrar / Buscar Paciente":
           conn.close()
           st.success("Paciente eliminado correctamente del sistema.")
           st.rerun()
-    else:
-      st.info("No hay pacientes registrados en el sistema todavía.")
+  else:
+    st.info("No hay pacientes registrados en el sistema todavía.")
 
-# --- MÓDULO: LISTADO Y CONTROL DE PACIENTES CON C1 / SUB ---
+# --- MÓDULO 3: LISTADO GENERAL DE PACIENTES ---
 elif choice == "📋 Listado de Pacientes":
-  st.subheader("📋 Base de Datos y Conteo de Visitas de Pacientes - Medisuport")
+  st.subheader("📋 Base de Datos y Conteo de Visitas de Pacientes")
   
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
@@ -322,9 +339,9 @@ elif choice == "📋 Listado de Pacientes":
   else:
     st.info("No hay pacientes registrados en el sistema.")
 
-# --- MÓDULO: AGENDA Y CITAS (CON OPCIÓN DE ELIMINAR CITAS) ---
+# --- MÓDULO 4: AGENDA Y CITAS (CON OPCIÓN DE MODIFICAR Y ELIMINAR CITAS) ---
 elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
-  st.subheader("Agenda Médica Virtual - Medisuport")
+  st.subheader("📅 Agenda Médica Virtual e Independiente")
   
   if role in ["secretaria", "admin"]:
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
@@ -334,7 +351,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
     conn.close()
     pacientes_dict = {f"{p[1]} (Cédula: {p[0]})": p[0] for p in pacientes}
 
-    st.write("Agendar Nueva Cita (Verificación automática de disponibilidad)")
+    st.write("### Agendar Nueva Cita")
     if pacientes_dict:
       paciente_sel = st.selectbox("Seleccionar Paciente", list(pacientes_dict.keys()), key="select_paciente_cita")
       cedula_act = pacientes_dict[paciente_sel]
@@ -369,7 +386,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
         conn.close()
 
         if conf_count > 0:
-          st.error(f"❌ **Horario No Disponible:** El/La Dr(a). {medico_sel} ya tiene una cita agendada para el día **{str_fecha}** a las **{str_hora}**. Por favor seleccione otra hora o médico.")
+          st.error(f"❌ **Horario No Disponible:** El/La Dr(a). {medico_sel} ya tiene una cita agendada para el día **{str_fecha}** a las **{str_hora}**. Seleccione otro horario.")
         else:
           conn = sqlite3.connect("clinica.db", check_same_thread=False)
           cursor = conn.cursor()
@@ -382,7 +399,7 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
           st.success(f"✅ ¡Cita agendada con éxito para el Dr(a). {medico_sel} el {str_fecha} a las {str_hora}!")
     st.divider()
 
-  st.subheader("Listado y Gestión de Citas Registradas")
+  st.subheader("📋 Listado y Gestión de Citas Registradas")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   if role == "medico":
@@ -401,31 +418,56 @@ elif choice in ["📅 Agenda y Citas", "📅 Ver Agenda de Citas"]:
   conn.close()
   
   if citas_data:
-    # Mostrar tabla visual
     df_citas_view = pd.DataFrame(citas_data, columns=["ID", "Fecha", "Hora", "Paciente", "Médico", "Especialidad"])
     st.dataframe(df_citas_view.drop(columns=["ID"]), use_container_width=True)
 
     st.divider()
     if role in ["secretaria", "admin"]:
-      with st.expander("🗑️ Cancelar / Eliminar una Cita Médica"):
-        citas_dict = {f"ID: {c[0]} | Fecha: {c[1]} {c[2]} | Paciente: {c[3]} | Dr(a). {c[4]}": c[0] for c in citas_data}
-        cita_a_borrar_sel = st.selectbox("Seleccione la cita a cancelar", list(citas_dict.keys()))
-        id_cita_eliminar = citas_dict[cita_a_borrar_sel]
+      with st.expander("🛠️ Modificar o Cancelar una Cita Médica"):
+        citas_dict = {f"Cita ID: {c[0]} | Paciente: {c[3]} | Fecha: {c[1]} {c[2]} | Dr(a). {c[4]}": c[0] for c in citas_data}
+        cita_sel_mod = st.selectbox("Seleccione la cita que desea gestionar", list(citas_dict.keys()))
+        id_cita_sel = citas_dict[cita_sel_mod]
 
-        if st.button("Eliminar Cita Seleccionada", type="primary"):
-          conn = sqlite3.connect("clinica.db", check_same_thread=False)
-          cursor = conn.cursor()
-          cursor.execute("DELETE FROM citas WHERE id = ?", (id_cita_eliminar,))
-          conn.commit()
-          conn.close()
-          st.success("La cita ha sido cancelada y eliminada correctamente.")
-          st.rerun()
+        # Consultar datos actuales de esa cita específica
+        conn = sqlite3.connect("clinica.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT fecha, hora, medico, especialidad FROM citas WHERE id = ?", (id_cita_sel,))
+        c_actual = cursor.fetchone()
+        conn.close()
+
+        if c_actual:
+          st.write(f"**Cita Actual:** {c_actual[0]} a las {c_actual[1]} con {c_actual[2]} ({c_actual[3]})")
+          
+          with st.form("form_modificar_cita"):
+            st.write("Modificar Fecha u Hora de la Cita")
+            nueva_fecha = st.date_input("Nueva Fecha", datetime.strptime(c_actual[0], "%Y-%m-%d").date())
+            nueva_hora = st.time_input("Nueva Hora", datetime.strptime(c_actual[1], "%H:%M:%S").time() if len(c_actual[1]) > 5 else datetime.strptime(c_actual[1], "%H:%M").time())
+            
+            actualizar_btn = st.form_submit_button("Guardar Cambios en la Cita")
+            if actualizar_btn:
+              conn = sqlite3.connect("clinica.db", check_same_thread=False)
+              cursor = conn.cursor()
+              cursor.execute("UPDATE citas SET fecha = ?, hora = ? WHERE id = ?", (str(nueva_fecha), str(nueva_hora), id_cita_sel))
+              conn.commit()
+              conn.close()
+              st.success("¡Cita modificada con éxito!")
+              st.rerun()
+
+          st.write("---")
+          if st.button("🗑️ Cancelar / Eliminar esta Cita por Completo", type="primary"):
+            conn = sqlite3.connect("clinica.db", check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM citas WHERE id = ?", (id_cita_sel,))
+            conn.commit()
+            conn.close()
+            st.success("La cita ha sido eliminada de la agenda.")
+            st.rerun()
   else:
     st.info("No hay citas registradas en el sistema.")
 
-# --- MÓDULO: CONSULTA MÉDICA E HISTORIAL ---
+# --- MÓDULO 5: CONSULTA MÉDICA E HISTORIAL ---
 elif choice == "🩺 Consulta Médica (Historial)":
-  st.subheader("Atención Médica y Evolución - Medisuport")
+  st.subheader("🩺 Atención Médica y Evolución - Medisuport")
   conn = sqlite3.connect("clinica.db", check_same_thread=False)
   cursor = conn.cursor()
   cursor.execute("SELECT cedula, nombre FROM pacientes")
@@ -489,16 +531,16 @@ elif choice == "🩺 Consulta Médica (Historial)":
   else:
     st.warning("No hay pacientes registrados.")
 
-# --- MÓDULO: RESPALDO Y DATOS ---
+# --- MÓDULO 6: RESPALDO Y DATOS ---
 elif choice in ["📥 Respaldo y Datos"]:
-  st.subheader("Respaldo y Reportes en Excel - Medisuport")
+  st.subheader("📥 Respaldo y Reportes en Excel - Medisuport")
   st.write("Genera y descarga un archivo de Excel (`.xlsx`) con toda la información general de la clínica.")
 
   if st.button("Generar Reporte Excel Completo"):
     conn = sqlite3.connect("clinica.db", check_same_thread=False)
     df_pacientes = pd.read_sql_query("SELECT * FROM pacientes", conn)
     df_citas = pd.read_sql_query("SELECT * FROM citas", conn)
-    df_historial = pd.read_sql_query("SELECT * FROM historial", conn)
+    df_historial = pd.read_sql_query("SELECT * historial", conn) if False else pd.read_sql_query("SELECT * FROM historial", conn)
     conn.close()
 
     output = io.BytesIO()
