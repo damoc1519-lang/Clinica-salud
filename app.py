@@ -34,17 +34,108 @@ def init_connection():
         password=password,
         sslmode="require",
         connect_timeout=15,
+        options="-c search_path=public",
     )
+
+def inicializar_tablas(connection):
+    """Crea solo tablas ausentes; conserva las tablas y los datos existentes."""
+    # TEXT conserva el formato que ya usa esta versión de la aplicación.
+    tablas = {
+        "pacientes": """
+            CREATE TABLE public.pacientes (
+                cedula TEXT PRIMARY KEY,
+                nombre TEXT NOT NULL,
+                sexo TEXT,
+                fecha_nacimiento TEXT,
+                domicilio TEXT,
+                telefono TEXT,
+                correo TEXT,
+                ocupacion TEXT,
+                prevision TEXT,
+                origen TEXT
+            )
+        """,
+        "disponibilidad": """
+            CREATE TABLE public.disponibilidad (
+                medico TEXT PRIMARY KEY,
+                especialidad TEXT NOT NULL,
+                dias TEXT,
+                horas TEXT
+            )
+        """,
+        "citas": """
+            CREATE TABLE public.citas (
+                id BIGSERIAL PRIMARY KEY,
+                cedula_paciente TEXT NOT NULL REFERENCES public.pacientes(cedula),
+                fecha TEXT NOT NULL,
+                hora TEXT NOT NULL,
+                medico TEXT NOT NULL,
+                especialidad TEXT,
+                vencimiento_issfa TEXT,
+                estado TEXT DEFAULT 'Agendada',
+                observaciones TEXT
+            )
+        """,
+        "historial": """
+            CREATE TABLE public.historial (
+                id BIGSERIAL PRIMARY KEY,
+                cedula_paciente TEXT NOT NULL REFERENCES public.pacientes(cedula),
+                fecha_atencion TEXT NOT NULL,
+                medico_atn TEXT,
+                tipo_consulta TEXT,
+                antecedentes_pers TEXT,
+                antecedentes_fam TEXT,
+                motivo TEXT,
+                enfermedad_actual TEXT,
+                peso TEXT,
+                talla TEXT,
+                pa TEXT,
+                fc TEXT,
+                imc TEXT,
+                diagnostico TEXT,
+                tratamiento TEXT,
+                examenes TEXT
+            )
+        """,
+    }
+    columnas = {
+        "pacientes": "cedula, nombre, sexo, fecha_nacimiento, domicilio, telefono, correo, ocupacion, prevision, origen",
+        "disponibilidad": "medico, especialidad, dias, horas",
+        "citas": "id, cedula_paciente, fecha, hora, medico, especialidad, vencimiento_issfa, estado, observaciones",
+        "historial": "id, cedula_paciente, fecha_atencion, medico_atn, tipo_consulta, antecedentes_pers, antecedentes_fam, motivo, enfermedad_actual, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes",
+    }
+    # Una transacción: si falla la preparación, se revierten sus cambios.
+    with connection:
+        with connection.cursor() as cur:
+            # Evita que dos instancias creen las mismas tablas simultáneamente.
+            cur.execute("SELECT pg_advisory_xact_lock(7352026)")
+            for nombre, ddl in tablas.items():
+                cur.execute("SELECT to_regclass(%s)", (f"public.{nombre}",))
+                if cur.fetchone()[0] is None:
+                    cur.execute(ddl)
+                    # Solo para tablas nuevas. Sin políticas, los clientes de la
+                    # API pública no acceden a sus filas. El backend usa postgres.
+                    cur.execute(f"ALTER TABLE public.{nombre} ENABLE ROW LEVEL SECURITY")
+                # Los nombres proceden de constantes internas, no del usuario.
+                # Detecta esquemas anteriores incompatibles sin modificarlos.
+                cur.execute(f"SELECT {columnas[nombre]} FROM public.{nombre} LIMIT 0")
+
 
 @st.cache_resource
 def get_db_connection():
-    return init_connection()
+    connection = init_connection()
+    try:
+        inicializar_tablas(connection)
+    except Exception:
+        connection.close()
+        raise
+    return connection
 
 try:
     conn = get_db_connection()
     cursor = conn.cursor()
-except psycopg2.OperationalError as e:
-    st.error(f"No se pudo conectar con Supabase: {e}")
+except psycopg2.Error as e:
+    st.error(f"No se pudo conectar o preparar las tablas de Supabase: {e}")
     st.stop()
 
 # --- CONFIGURACIÓN DE TEMA CLARO ---
