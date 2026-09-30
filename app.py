@@ -189,14 +189,32 @@ def verificar_y_poblar_disponibilidad():
                 ("Dr. William Fonseca", "Urología", "Lunes, Miércoles y Viernes", "08:00 - 13:00")
             ]
             for d in default_data:
-                cursor.execute("INSERT INTO disponibilidad (medico, especialidad, dias, horas) VALUES (%s, %s, %s, %s) ON CONFLICT (medico) DO NOTHING", d)
+                cursor.execute("""
+                    INSERT INTO disponibilidad (medico, especialidad, dias, horas) 
+                    VALUES (%s, %s, %s, %s) 
+                    ON CONFLICT (medico) DO NOTHING
+                """, d)
             conn.commit()
     except psycopg2.Error as err:
-        conn.rollback()
+        conn.rollback()  # Limpia la transacción abortada de inmediato
         st.error(f"No se pudo preparar la disponibilidad de médicos: {err}")
         st.stop()
 
 verificar_y_poblar_disponibilidad()
+
+# --- FUNCIONES AUXILIARES PARA CARGAR DISPONIBILIDAD DESDE DB ---
+def obtener_medicos_info():
+    try:
+        cursor.execute("SELECT medico, especialidad, dias, horas FROM disponibilidad")
+        rows = cursor.fetchall()
+        info = {}
+        for r in rows:
+            info[r[0]] = {"esp": r[1], "dias": r[2], "horas": r[3]}
+        return info
+    except psycopg2.Error as err:
+        conn.rollback()  # Previene que el error rompa futuras consultas en la sesión
+        st.error(f"No se pudo cargar la disponibilidad de médicos: {err}")
+        return {}
 
 # --- FUNCIONES AUXILIARES PARA CARGAR DISPONIBILIDAD DESDE DB ---
 def obtener_medicos_info():
