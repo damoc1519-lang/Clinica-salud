@@ -38,7 +38,7 @@ def init_connection():
     )
 
 def inicializar_tablas(connection):
-    """Crea solo tablas ausentes; conserva las tablas y los datos existentes."""
+    """Crea tablas y añade columnas ausentes conservando los datos existentes."""
     # TEXT conserva el formato que ya usa esta versión de la aplicación.
     tablas = {
         "pacientes": """
@@ -116,8 +116,24 @@ def inicializar_tablas(connection):
                     # Solo para tablas nuevas. Sin políticas, los clientes de la
                     # API pública no acceden a sus filas. El backend usa postgres.
                     cur.execute(f"ALTER TABLE public.{nombre} ENABLE ROW LEVEL SECURITY")
-                # Los nombres proceden de constantes internas, no del usuario.
-                # Detecta esquemas anteriores incompatibles sin modificarlos.
+                # Completa tablas de versiones anteriores sin modificar valores
+                # ni cambiar los tipos de las columnas que ya existen.
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s",
+                    ("public", nombre),
+                )
+                existentes = {fila[0] for fila in cur.fetchall()}
+                for columna in columnas[nombre].split(", "):
+                    if columna not in existentes:
+                        tipo = "BIGSERIAL" if columna == "id" else "TEXT"
+                        # Nombres y tipos provienen de constantes internas.
+                        # Los nuevos campos de texto quedan NULL en registros
+                        # anteriores: no se inventan datos de los pacientes.
+                        cur.execute(
+                            f"ALTER TABLE public.{nombre} "
+                            f"ADD COLUMN IF NOT EXISTS {columna} {tipo}"
+                        )
                 cur.execute(f"SELECT {columnas[nombre]} FROM public.{nombre} LIMIT 0")
 
 
