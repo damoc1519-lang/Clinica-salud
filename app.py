@@ -27,8 +27,8 @@ def init_connection():
             )
             st.stop()
     return psycopg2.connect(
-        host="aws-0-us-west-2.pooler.supabase.com",
-        port=5432,
+        host="aws-0-us-west-2.pooler.supabase.co",
+        port=6543,
         dbname="postgres",
         user="postgres.vktnksyxgtgphohpjmke",
         password=password,
@@ -39,7 +39,6 @@ def init_connection():
 
 def inicializar_tablas(connection):
     """Crea tablas y añade columnas ausentes conservando los datos existentes."""
-    # TEXT conserva el formato que ya usa esta versión de la aplicación.
     tablas = {
         "pacientes": """
             CREATE TABLE public.pacientes (
@@ -85,6 +84,7 @@ def inicializar_tablas(connection):
                 tipo_consulta TEXT,
                 antecedentes_pers TEXT,
                 antecedentes_fam TEXT,
+                habitos TEXT,
                 motivo TEXT,
                 enfermedad_actual TEXT,
                 peso TEXT,
@@ -102,22 +102,17 @@ def inicializar_tablas(connection):
         "pacientes": "cedula, nombre, sexo, fecha_nacimiento, domicilio, telefono, correo, ocupacion, prevision, origen",
         "disponibilidad": "medico, especialidad, dias, horas",
         "citas": "id, cedula_paciente, fecha, hora, medico, especialidad, vencimiento_issfa, estado, observaciones",
-        "historial": "id, cedula_paciente, fecha_atencion, medico_atn, tipo_consulta, antecedentes_pers, antecedentes_fam, motivo, enfermedad_actual, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes",
+        "historial": "id, cedula_paciente, fecha_atencion, medico_atn, tipo_consulta, antecedentes_pers, antecedentes_fam, habitos, motivo, enfermedad_actual, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes",
     }
-    # Una transacción: si falla la preparación, se revierten sus cambios.
     with connection:
         with connection.cursor() as cur:
-            # Evita que dos instancias creen las mismas tablas simultáneamente.
             cur.execute("SELECT pg_advisory_xact_lock(7352026)")
             for nombre, ddl in tablas.items():
                 cur.execute("SELECT to_regclass(%s)", (f"public.{nombre}",))
                 if cur.fetchone()[0] is None:
                     cur.execute(ddl)
-                    # Solo para tablas nuevas. Sin políticas, los clientes de la
-                    # API pública no acceden a sus filas. El backend usa postgres.
                     cur.execute(f"ALTER TABLE public.{nombre} ENABLE ROW LEVEL SECURITY")
-                # Completa tablas de versiones anteriores sin modificar valores
-                # ni cambiar los tipos de las columnas que ya existen.
+                
                 cur.execute(
                     "SELECT column_name FROM information_schema.columns "
                     "WHERE table_schema = %s AND table_name = %s",
@@ -127,15 +122,11 @@ def inicializar_tablas(connection):
                 for columna in columnas[nombre].split(", "):
                     if columna not in existentes:
                         tipo = "BIGSERIAL" if columna == "id" else "TEXT"
-                        # Nombres y tipos provienen de constantes internas.
-                        # Los nuevos campos de texto quedan NULL en registros
-                        # anteriores: no se inventan datos de los pacientes.
                         cur.execute(
                             f"ALTER TABLE public.{nombre} "
                             f"ADD COLUMN IF NOT EXISTS {columna} {tipo}"
                         )
                 cur.execute(f"SELECT {columnas[nombre]} FROM public.{nombre} LIMIT 0")
-
 
 @st.cache_resource
 def get_db_connection():
@@ -314,7 +305,7 @@ def generar_documento_word(info_p, visitas, codigo_estado, historial_p):
 
     p_info = doc.add_paragraph()
     p_info.add_run("• Nombre Completo: ").bold = True
-    p_info.add_run(f"{info_p[1]}\n") # En postgres el ID es serial, nombre es indice 1 o segun orden
+    p_info.add_run(f"{info_p[1]}\n")
     p_info.add_run("• Documento de Identidad: ").bold = True
     p_info.add_run(f"{info_p[0]}\n")
     p_info.add_run("• Sexo: ").bold = True
@@ -347,23 +338,25 @@ def generar_documento_word(info_p, visitas, codigo_estado, historial_p):
     if historial_p:
         for idx, h in enumerate(historial_p, 1):
             p_atn = doc.add_paragraph()
+            # Mapeo actualizado de índices según la tupla de historial:
+            # 0:fecha, 1:medico, 2:tipo_consulta, 3:ant_pers, 4:ant_fam, 5:habitos, 6:motivo, 7:enfermedad, 8:peso, 9:talla, 10:pa, 11:fc, 12:imc, 13:diag, 14:trat, 15:exam
             p_atn.add_run(f"Atención #{len(historial_p) - idx + 1} - Fecha: {h[0]} [Código: {h[2]}]\n").bold = True
             p_atn.add_run(f"Médico Tratante: {h[1]}\n").italic = True
             
             p_atn.add_run("  - Motivo de Consulta: ").bold = True
-            p_atn.add_run(f"{h[5]}\n")
-            p_atn.add_run("  - Enfermedad Actual / Anamnesis: ").bold = True
             p_atn.add_run(f"{h[6]}\n")
+            p_atn.add_run("  - Enfermedad Actual / Anamnesis: ").bold = True
+            p_atn.add_run(f"{h[7]}\n")
             p_atn.add_run("  - Antecedentes Personales: ").bold = True
-            p_atn.add_run(f"{h[3]} | Familiares: {h[4]} | Hábitos: (No especificado)\n")
+            p_atn.add_run(f"{h[3]} | Familiares: {h[4]} | Hábitos: {h[5] if h[5] else 'No especificado'}\n")
             p_atn.add_run("  - Signos Vitales y Antropometría: ").bold = True
-            p_atn.add_run(f"Peso: {h[7]} kg | Talla: {h[8]} cm | PA: {h[9]} | FC: {h[10]} lpm | IMC: {h[11]}\n")
+            p_atn.add_run(f"Peso: {h[8]} kg | Talla: {h[9]} cm | PA: {h[10]} | FC: {h[11]} lpm | IMC: {h[12]}\n")
             p_atn.add_run("  - Diagnóstico: ").bold = True
-            p_atn.add_run(f"{h[12]}\n")
-            p_atn.add_run("  - Tratamiento / Receta: ").bold = True
             p_atn.add_run(f"{h[13]}\n")
-            p_atn.add_run("  - Exámenes Complementarios: ").bold = True
+            p_atn.add_run("  - Tratamiento / Receta: ").bold = True
             p_atn.add_run(f"{h[14]}\n")
+            p_atn.add_run("  - Exámenes Complementarios: ").bold = True
+            p_atn.add_run(f"{h[15]}\n")
             
             doc.add_paragraph(".............................................................................................................................")
     else:
@@ -384,7 +377,7 @@ if choice == "Registrar Paciente":
             cedula = st.text_input("Número de Documento / Cédula / Pasaporte")
             nombre = st.text_input("Nombre Completo")
             sexo = st.selectbox("Sexo", ["Masculino", "Femenino", "Otro"])
-            f_nac = st.date_input("Fecha de Nacimiento", datetime(1990, 1, 1))
+            f_nac = st.date_input("Fecha de Nacimiento", value=datetime(1990, 1, 1), min_value=datetime(1900, 1, 1), max_value=datetime.now())
             telefono = st.text_input("Teléfono / Celular")
         with col2:
             correo = st.text_input("Correo Electrónico")
@@ -430,7 +423,7 @@ elif choice == "Buscar y Gestionar Pacientes":
             codigo_estado = "C1" if visitas == 0 else "SUB"
 
             cursor.execute("""
-                SELECT fecha_atencion, medico_atn, tipo_consulta, antecedentes_pers, antecedentes_fam,  
+                SELECT fecha_atencion, medico_atn, tipo_consulta, antecedentes_pers, antecedentes_fam, habitos, 
                        motivo, enfermedad_actual, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes 
                 FROM historial WHERE cedula_paciente = %s ORDER BY id DESC
             """, (cedula_buscar,))
@@ -456,19 +449,43 @@ elif choice == "Buscar y Gestionar Pacientes":
                     st.write("### 📂 Historial de Atenciones Clínicas Anteriores")
                     for h in historial_p:
                         with st.expander(f"Atención del {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
-                            st.write(f"**Motivo de Consulta:** {h[5]}")
-                            st.write(f"**Enfermedad Actual / Anamnesis:** {h[6]}")
-                            st.write(f"**Antecedentes Personales:** {h[3]} | **Familiares:** {h[4]}")
-                            st.write(f"**Signos Vitales y Antropometría:** Peso: {h[7]} kg | Talla: {h[8]} cm | PA: {h[9]} | FC: {h[10]} lpm | IMC: {h[11]}")
-                            st.write(f"**Diagnóstico:** {h[12]}")
-                            st.write(f"**Tratamiento y Receta:** {h[13]}")
-                            st.write(f"**Resultados de Exámenes:** {h[14]}")
+                            st.write(f"**Motivo de Consulta:** {h[6]}")
+                            st.write(f"**Enfermedad Actual / Anamnesis:** {h[7]}")
+                            st.write(f"**Antecedentes Personales:** {h[3]} | **Familiares:** {h[4]} | **Hábitos:** {h[5] if h[5] else 'No especificado'}")
+                            st.write(f"**Signos Vitales y Antropometría:** Peso: {h[8]} kg | Talla: {h[9]} cm | PA: {h[10]} | FC: {h[11]} lpm | IMC: {h[12]}")
+                            st.write(f"**Diagnóstico:** {h[13]}")
+                            st.write(f"**Tratamiento y Receta:** {h[14]}")
+                            st.write(f"**Resultados de Exámenes:** {h[15]}")
                 else:
                     st.warning("Este paciente no cuenta con consultas previas registradas (Le corresponde código C1).")
 
         st.divider()
+        
+        # Módulo para editar datos del paciente
+        with st.expander("✏️ Editar Datos del Paciente"):
+            cursor.execute("SELECT nombre, sexo, domicilio, telefono, correo, ocupacion, prevision FROM pacientes WHERE cedula = %s", (cedula_buscar,))
+            p_edit = cursor.fetchone()
+            if p_edit:
+                with st.form("form_editar_paciente"):
+                    nuevo_nombre = st.text_input("Nombre Completo", value=p_edit[0])
+                    nuevo_domicilio = st.text_input("Domicilio", value=p_edit[2] if p_edit[2] else "")
+                    nuevo_telefono = st.text_input("Teléfono", value=p_edit[3] if p_edit[3] else "")
+                    nuevo_correo = st.text_input("Correo", value=p_edit[4] if p_edit[4] else "")
+                    nueva_ocupacion = st.text_input("Ocupación", value=p_edit[5] if p_edit[5] else "")
+                    nueva_prevision = st.selectbox("Sistema de Salud", ["Particular / Propio de la Clínica", "ISSFA", "IESS", "MSP", "Seguro Privado"], index=0)
+                    
+                    if st.form_submit_button("Guardar Cambios del Paciente"):
+                        cursor.execute("""
+                            UPDATE pacientes 
+                            SET nombre = %s, domicilio = %s, telefono = %s, correo = %s, ocupacion = %s, prevision = %s 
+                            WHERE cedula = %s
+                        """, (nuevo_nombre, nuevo_domicilio, nuevo_telefono, nuevo_correo, nueva_ocupacion, nueva_prevision, cedula_buscar))
+                        conn.commit()
+                        st.success("¡Datos del paciente actualizados correctamente!")
+                        st.rerun()
+
         if role in ["secretaria", "admin"]:
-            with st.expander("🗑️ Zona de Peligro: Borrar Paciente por Error"):
+            with st.expander("🗑️ Zona de Peligro: Borrar Paciente"):
                 if st.button("Eliminar Definitivamente a este Paciente", type="primary"):
                     cursor.execute("DELETE FROM historial WHERE cedula_paciente = %s", (cedula_buscar,))
                     cursor.execute("DELETE FROM citas WHERE cedula_paciente = %s", (cedula_buscar,))
@@ -722,12 +739,12 @@ elif choice in ["Consulta Medica (Historial)", "Consulta Médica (Historial)"]:
                 cursor.execute("""
                     INSERT INTO historial (
                         cedula_paciente, fecha_atencion, medico_atn, tipo_consulta, 
-                        antecedentes_pers, antecedentes_fam, motivo, enfermedad_actual, 
+                        antecedentes_pers, antecedentes_fam, habitos, motivo, enfermedad_actual, 
                         peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     cedula_paciente, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state['user_name'], tipo_consulta_auto,
-                    antecedentes_pers, antecedentes_fam, motivo, enfermedad_actual,
+                    antecedentes_pers, antecedentes_fam, habitos, motivo, enfermedad_actual,
                     peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes
                 ))
                 conn.commit()
@@ -738,7 +755,7 @@ elif choice in ["Consulta Medica (Historial)", "Consulta Médica (Historial)"]:
         st.subheader("📂 Historial de Consultas Anteriores del Paciente")
         cursor.execute("""
             SELECT fecha_atencion, medico_atn, tipo_consulta, motivo, enfermedad_actual, 
-                   antecedentes_pers, antecedentes_fam, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes 
+                   antecedentes_pers, antecedentes_fam, habitos, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes 
             FROM historial WHERE cedula_paciente = %s ORDER BY id DESC
         """, (cedula_paciente,))
         historicos = cursor.fetchall()
@@ -748,11 +765,11 @@ elif choice in ["Consulta Medica (Historial)", "Consulta Médica (Historial)"]:
                 with st.expander(f"Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
                     st.write(f"**Motivo:** {h[3]}")
                     st.write(f"**Enfermedad Actual:** {h[4]}")
-                    st.write(f"**Antecedentes Personales:** {h[5]} | **Familiares:** {h[6]}")
-                    st.write(f"**Signos Vitales:** Peso: {h[7]}kg | Talla: {h[8]}cm | PA: {h[9]} | FC: {h[10]} | IMC: {h[11]}")
-                    st.write(f"**Diagnóstico:** {h[12]}")
-                    st.write(f"**Tratamiento:** {h[13]}")
-                    st.write(f"**Exámenes:** {h[14]}")
+                    st.write(f"**Antecedentes Personales:** {h[5]} | **Familiares:** {h[6]} | **Hábitos:** {h[7] if h[7] else 'No especificado'}")
+                    st.write(f"**Signos Vitales:** Peso: {h[8]}kg | Talla: {h[9]}cm | PA: {h[10]} | FC: {h[11]} | IMC: {h[12]}")
+                    st.write(f"**Diagnóstico:** {h[13]}")
+                    st.write(f"**Tratamiento:** {h[14]}")
+                    st.write(f"**Exámenes:** {h[15]}")
         else:
             st.info("No hay registros previos para este paciente.")
     else:
