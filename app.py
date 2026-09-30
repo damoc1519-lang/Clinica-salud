@@ -9,10 +9,31 @@ psycopg2 = __import__("psycopg2")
 pd = __import__("pandas")
 st = __import__("streamlit")
 
-# --- CONFIGURACIÓN DE CONEXIÓN A SUPABASE ---
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(
+    page_title="Medisuport - Sistema Clínico", page_icon="🏥", layout="wide"
+)
+
+# --- CONEXIÓN A SUPABASE: SESSION POOLER ---
 def init_connection():
+    password = os.environ.get("DB_PASSWORD")
+    if not password:
+        try:
+            password = st.secrets["DB_PASSWORD"]
+        except (FileNotFoundError, KeyError):
+            st.error(
+                "Falta configurar DB_PASSWORD. Coloque el archivo secrets.toml "
+                "dentro de la carpeta .streamlit del proyecto."
+            )
+            st.stop()
     return psycopg2.connect(
-        "postgresql://postgres.vktnksyxgtgphohpjmke:R3ratoncitos@aws-0-us-west-2.pooler.supabase.com:6543/postgres"
+        host="aws-0-us-west-2.pooler.supabase.com",
+        port=5432,
+        dbname="postgres",
+        user="postgres.vktnksyxgtgphohpjmke",
+        password=password,
+        sslmode="require",
+        connect_timeout=15,
     )
 
 @st.cache_resource
@@ -22,15 +43,11 @@ def get_db_connection():
 try:
     conn = get_db_connection()
     cursor = conn.cursor()
-except Exception as e:
-    st.error(f"Error al conectar con la base de datos en la nube (Supabase): {e}")
+except psycopg2.OperationalError as e:
+    st.error(f"No se pudo conectar con Supabase: {e}")
     st.stop()
 
 # --- CONFIGURACIÓN DE TEMA CLARO ---
-st.set_page_config(
-    page_title="Medisuport - Sistema Clínico", page_icon="🏥", layout="wide"
-)
-
 st.markdown("""
     <style>
     .main { background-color: #FFFFFF; color: #000000; }
@@ -76,8 +93,10 @@ def verificar_y_poblar_disponibilidad():
             for d in default_data:
                 cursor.execute("INSERT INTO disponibilidad (medico, especialidad, dias, horas) VALUES (%s, %s, %s, %s) ON CONFLICT (medico) DO NOTHING", d)
             conn.commit()
-    except Exception:
-        pass
+    except psycopg2.Error as err:
+        conn.rollback()
+        st.error(f"No se pudo preparar la disponibilidad de médicos: {err}")
+        st.stop()
 
 verificar_y_poblar_disponibilidad()
 
@@ -90,8 +109,10 @@ def obtener_medicos_info():
         for r in rows:
             info[r[0]] = {"esp": r[1], "dias": r[2], "horas": r[3]}
         return info
-    except Exception:
-        return {}
+    except psycopg2.Error as err:
+        conn.rollback()
+        st.error(f"No se pudo cargar la disponibilidad de médicos: {err}")
+        st.stop()
 
 def obtener_medicos_especialidades():
     medicos_info = obtener_medicos_info()
