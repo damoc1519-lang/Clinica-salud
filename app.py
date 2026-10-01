@@ -83,7 +83,7 @@ if user['must_change']:
             if new!=repeat: st.error("Las contraseñas no coinciden.")
             else:
                 ok=run(lambda:db.change_password(UID,current,new),"Contraseña actualizada. Ingrese nuevamente.",False)
-                if ok is None:
+                if ok:
                     st.session_state.pop('user',None); st.rerun()
     st.stop()
 
@@ -131,7 +131,10 @@ def dashboard():
 
 def patient_form(existing=None):
     e=existing or {}
-    with st.form("patient_form"):
+    # La pestaña "Buscar y editar" y la pestaña "Registrar" se renderizan
+    # al mismo tiempo. Cada formulario necesita una clave distinta.
+    form_key=f"patient_form_{e.get('id', 'new')}"
+    with st.form(form_key):
         a,b=st.columns(2)
         with a:
             document=st.text_input("Documento *",value=e.get('document',''),disabled=bool(existing))
