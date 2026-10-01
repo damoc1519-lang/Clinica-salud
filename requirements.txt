@@ -1,5 +1,5 @@
-streamlit
-pandas
-openpyxl
-python-docx
-psycopg2-binary
+streamlit>=1.39,<2
+psycopg2-binary>=2.9,<3
+pandas>=2.2,<4
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
