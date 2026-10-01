@@ -1,0 +1,14 @@
+MEDISUPORT V2 — PASOS RÁPIDOS
+
+1. Descomprima el paquete en la raíz de su repositorio de Codespaces.
+2. NO reemplace ni comparta .streamlit/secrets.toml; conserve el que ya funciona.
+3. Terminal:
+   python -m pip install -r requirements.txt
+   python -m streamlit run app.py
+4. Cree la primera cuenta administradora en pantalla.
+5. Administración > Actualización de datos anteriores > Importar.
+6. Descargue el Excel de pendientes, si aparece alguno.
+7. Configure horarios y luego pruebe una cita de inicio a fin.
+
+Las tablas anteriores se conservan. La versión nueva trabaja dentro del esquema
+medisuport de Supabase.
