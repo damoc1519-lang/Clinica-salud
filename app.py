@@ -1,769 +1,375 @@
-from datetime import datetime
-import os
-import io
-import docx
-from docx.shared import Inches, Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+"""Medisuport v2 — interfaz Streamlit."""
+from datetime import date, datetime, time, timedelta
+import io, json, logging, traceback
+import pandas as pd
+import streamlit as st
+from psycopg2.errors import ExclusionViolation, UniqueViolation
 
-psycopg2 = __import__("psycopg2")
-pd = __import__("pandas")
-st = __import__("streamlit")
+from core import Database, AppError, TZ, WEEKDAYS, STATUSES, now, local_datetime
+from exports import word_history, excel
+from legacy import preview as legacy_preview, import_legacy, issues as legacy_issues
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(
-    page_title="Medisuport - Sistema Clínico", page_icon="🏥", layout="wide"
-)
+st.set_page_config(page_title="Medisuport", page_icon="🏥", layout="wide")
+logging.basicConfig(level=logging.INFO)
+st.markdown("""
+<style>
+.block-container{padding-top:1.2rem;max-width:1500px}.stMetric{border:1px solid #e6e9ef;border-radius:12px;padding:12px}
+[data-testid="stSidebar"]{background:#f5f8fb}.small-note{color:#586174;font-size:.88rem}
+</style>""", unsafe_allow_html=True)
 
-# --- CONEXIÓN A SUPABASE: SESSION POOLER ---
-def init_connection():
-    password = os.environ.get("DB_PASSWORD")
-    if not password:
-        try:
-            password = st.secrets["DB_PASSWORD"]
-        except (FileNotFoundError, KeyError):
-            st.error(
-                "Falta configurar DB_PASSWORD. Coloque el archivo secrets.toml "
-                "dentro de la carpeta .streamlit del proyecto."
-            )
-            st.stop()
-    return psycopg2.connect(
-        host="aws-0-us-west-2.pooler.supabase.com",
-        port=5432,
-        dbname="postgres",
-        user="postgres.vktnksyxgtgphohpjmke",
-        password=password,
-        sslmode="require",
-        connect_timeout=15,
-        options="-c search_path=public",
-    )
+@st.cache_resource(show_spinner="Conectando con Supabase…")
+def database():
+    db=Database(); db.initialize(); return db
 
-def inicializar_tablas(connection):
-    """Crea solo tablas ausentes; conserva las tablas y los datos existentes."""
-    # TEXT conserva el formato que ya usa esta versión de la aplicación.
-    tablas = {
-        "pacientes": """
-            CREATE TABLE public.pacientes (
-                cedula TEXT PRIMARY KEY,
-                nombre TEXT NOT NULL,
-                sexo TEXT,
-                fecha_nacimiento TEXT,
-                domicilio TEXT,
-                telefono TEXT,
-                correo TEXT,
-                ocupacion TEXT,
-                prevision TEXT,
-                origen TEXT
-            )
-        """,
-        "disponibilidad": """
-            CREATE TABLE public.disponibilidad (
-                medico TEXT PRIMARY KEY,
-                especialidad TEXT NOT NULL,
-                dias TEXT,
-                horas TEXT
-            )
-        """,
-        "citas": """
-            CREATE TABLE public.citas (
-                id BIGSERIAL PRIMARY KEY,
-                cedula_paciente TEXT NOT NULL REFERENCES public.pacientes(cedula),
-                fecha TEXT NOT NULL,
-                hora TEXT NOT NULL,
-                medico TEXT NOT NULL,
-                especialidad TEXT,
-                vencimiento_issfa TEXT,
-                estado TEXT DEFAULT 'Agendada',
-                observaciones TEXT
-            )
-        """,
-        "historial": """
-            CREATE TABLE public.historial (
-                id BIGSERIAL PRIMARY KEY,
-                cedula_paciente TEXT NOT NULL REFERENCES public.pacientes(cedula),
-                fecha_atencion TEXT NOT NULL,
-                medico_atn TEXT,
-                tipo_consulta TEXT,
-                antecedentes_pers TEXT,
-                antecedentes_fam TEXT,
-                motivo TEXT,
-                enfermedad_actual TEXT,
-                peso TEXT,
-                talla TEXT,
-                pa TEXT,
-                fc TEXT,
-                imc TEXT,
-                diagnostico TEXT,
-                tratamiento TEXT,
-                examenes TEXT
-            )
-        """,
-    }
-    columnas = {
-        "pacientes": "cedula, nombre, sexo, fecha_nacimiento, domicilio, telefono, correo, ocupacion, prevision, origen",
-        "disponibilidad": "medico, especialidad, dias, horas",
-        "citas": "id, cedula_paciente, fecha, hora, medico, especialidad, vencimiento_issfa, estado, observaciones",
-        "historial": "id, cedula_paciente, fecha_atencion, medico_atn, tipo_consulta, antecedentes_pers, antecedentes_fam, motivo, enfermedad_actual, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes",
-    }
-    # Una transacción: si falla la preparación, se revierten sus cambios.
-    with connection:
-        with connection.cursor() as cur:
-            # Evita que dos instancias creen las mismas tablas simultáneamente.
-            cur.execute("SELECT pg_advisory_xact_lock(7352026)")
-            for nombre, ddl in tablas.items():
-                cur.execute("SELECT to_regclass(%s)", (f"public.{nombre}",))
-                if cur.fetchone()[0] is None:
-                    cur.execute(ddl)
-                    # Solo para tablas nuevas. Sin políticas, los clientes de la
-                    # API pública no acceden a sus filas. El backend usa postgres.
-                    cur.execute(f"ALTER TABLE public.{nombre} ENABLE ROW LEVEL SECURITY")
-                # Los nombres proceden de constantes internas, no del usuario.
-                # Detecta esquemas anteriores incompatibles sin modificarlos.
-                cur.execute(f"SELECT {columnas[nombre]} FROM public.{nombre} LIMIT 0")
+def fail(exc):
+    if isinstance(exc, AppError): st.error(str(exc))
+    elif isinstance(exc, (UniqueViolation,ExclusionViolation)): st.error("El dato ya existe o el horario se cruza con otro registro. Actualice y vuelva a intentar.")
+    else:
+        logging.exception("Error inesperado")
+        st.error("Ocurrió un error inesperado. El detalle quedó registrado en la terminal.")
 
-
-@st.cache_resource
-def get_db_connection():
-    connection = init_connection()
+def run(action, success=None, rerun=True):
     try:
-        inicializar_tablas(connection)
-    except Exception:
-        connection.close()
-        raise
-    return connection
+        result=action()
+        if success: st.success(success)
+        if rerun: st.rerun()
+        return result if result is not None else True
+    except Exception as exc:
+        fail(exc)
+        return False
+
+try: db=database()
+except Exception as exc:
+    fail(exc); st.stop()
+
+def login_screen():
+    st.title("🏥 Medisuport")
+    st.caption("Sistema de gestión clínica")
+    if not db.ready():
+        st.info("Primera configuración: cree la cuenta administradora. Esta pantalla desaparece después del registro.")
+        with st.form("bootstrap"):
+            name=st.text_input("Nombre completo")
+            username=st.text_input("Usuario")
+            password=st.text_input("Contraseña nueva",type="password",help="Mínimo 12 caracteres")
+            repeat=st.text_input("Repita la contraseña",type="password")
+            if st.form_submit_button("Crear administrador",type="primary"):
+                if password!=repeat: st.error("Las contraseñas no coinciden.")
+                else: run(lambda: db.bootstrap(username,name,password),"Administrador creado. Ingrese con su cuenta.")
+        return
+    with st.form("login"):
+        username=st.text_input("Usuario")
+        password=st.text_input("Contraseña",type="password")
+        if st.form_submit_button("Ingresar",type="primary"):
+            user=run(lambda:db.login(username,password),rerun=False)
+            if user:
+                st.session_state.user=user; st.session_state.page="Inicio"; st.rerun()
+
+if "user" not in st.session_state:
+    login_screen(); st.stop()
+try:
+    user=db.session_user(st.session_state.user['id'],st.session_state.user['auth_version'])
+    st.session_state.user.update(user)
+except Exception as exc:
+    st.session_state.pop('user',None); fail(exc); st.stop()
+UID=user['id']; ROLE=user['role']; DOCTOR=user['doctor_id']
+
+if user['must_change']:
+    st.title("Cambie su contraseña temporal")
+    with st.form("forced_password"):
+        current=st.text_input("Contraseña temporal",type="password")
+        new=st.text_input("Contraseña nueva",type="password")
+        repeat=st.text_input("Repita la contraseña",type="password")
+        if st.form_submit_button("Cambiar contraseña",type="primary"):
+            if new!=repeat: st.error("Las contraseñas no coinciden.")
+            else:
+                ok=run(lambda:db.change_password(UID,current,new),"Contraseña actualizada. Ingrese nuevamente.",False)
+                if ok is None:
+                    st.session_state.pop('user',None); st.rerun()
+    st.stop()
+
+pages={
+ 'admin':['Inicio','Pacientes','Agenda','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
+ 'secretaria':['Inicio','Pacientes','Agenda','Médicos y horarios','Reportes'],
+ 'medico':['Inicio','Mis citas','Historia clínica','Pacientes']
+}[ROLE]
+st.sidebar.title("Medisuport 🏥")
+st.sidebar.write(f"**{user['name']}**")
+st.sidebar.caption({'admin':'Administrador','secretaria':'Secretaría','medico':'Médico'}[ROLE])
+page=st.sidebar.radio("Menú",pages,key="page")
+if st.sidebar.button("Cerrar sesión"):
+    st.session_state.clear(); st.rerun()
+with st.sidebar.expander("Cambiar mi contraseña"):
+    with st.form("own_password"):
+        old=st.text_input("Actual",type="password")
+        new=st.text_input("Nueva",type="password")
+        if st.form_submit_button("Actualizar"):
+            changed=run(lambda:db.change_password(UID,old,new),"Contraseña actualizada; ingrese nuevamente.",False)
+            if changed:
+                st.session_state.clear(); st.rerun()
+
+def doctors(active=True): return db.doctors(UID,all_rows=not active)
+def doctor_map(active=True): return {d['name']:d for d in doctors(active)}
+def patient_picker(key,active=True):
+    query=st.text_input("Buscar por nombre, documento o teléfono",key=key+"_q")
+    rows=db.patients(UID,query,archived=not active)
+    if not rows: st.info("No hay pacientes que coincidan."); return None
+    labels={f"{p['name']} · {p['document']}":p for p in rows}
+    return labels[st.selectbox("Paciente",labels,key=key+"_p")]
+def fmt_dt(v): return v.astimezone(TZ).strftime('%d/%m/%Y %H:%M') if v else ''
+def appointment_table(rows):
+    return pd.DataFrame([{'Hora':fmt_dt(r['start_at']),'Paciente':r['patient'],'Documento':r['document'],'Teléfono':r['phone'],'Médico':r['doctor'],'Especialidad':r['specialty'],'Estado':r['status']} for r in rows])
+
+def dashboard():
+    st.title("Agenda de hoy")
+    rows=db.appointments(UID,now().date(),now().date())
+    total=len(rows); attended=sum(r['status']=='Atendida' for r in rows); waiting=sum(r['status'] in ('Llegó','En atención') for r in rows)
+    c1,c2,c3=st.columns(3); c1.metric("Citas",total); c2.metric("Esperando / en atención",waiting); c3.metric("Atendidas",attended)
+    if rows: st.dataframe(appointment_table(rows),hide_index=True,use_container_width=True)
+    else: st.info("No hay citas para hoy.")
+    if ROLE=='medico':
+        st.caption("Para abrir una consulta, la recepción debe marcar primero que el paciente llegó.")
+
+def patient_form(existing=None):
+    e=existing or {}
+    with st.form("patient_form"):
+        a,b=st.columns(2)
+        with a:
+            document=st.text_input("Documento *",value=e.get('document',''),disabled=bool(existing))
+            name=st.text_input("Nombre completo *",value=e.get('name',''))
+            sex=st.selectbox("Sexo",['','Femenino','Masculino','Otro'],index=['','Femenino','Masculino','Otro'].index(e.get('sex') or '') if (e.get('sex') or '') in ['','Femenino','Masculino','Otro'] else 0)
+            birth=st.date_input("Fecha de nacimiento",value=e.get('birth_date'),min_value=date(1900,1,1),max_value=now().date(),format='DD/MM/YYYY')
+            phone=st.text_input("Teléfono",value=e.get('phone') or '')
+        with b:
+            email=st.text_input("Correo",value=e.get('email') or '')
+            address=st.text_input("Dirección",value=e.get('address') or '')
+            occupation=st.text_input("Ocupación",value=e.get('occupation') or '')
+            coverages=['Particular / Propio de la Clínica','ISSFA','IESS','MSP','Seguro Privado']
+            coverage=st.selectbox("Cobertura",coverages,index=coverages.index(e.get('coverage')) if e.get('coverage') in coverages else 0)
+            origins=['Propio de la Clínica','Prestador Externo ISSFA']
+            origin=st.selectbox("Origen",origins,index=origins.index(e.get('origin')) if e.get('origin') in origins else 0)
+        if st.form_submit_button("Guardar ficha",type="primary"):
+            data={'document':document,'name':name,'sex':sex,'birth_date':birth,'phone':phone,'email':email,
+                  'address':address,'occupation':occupation,'coverage':coverage,'origin':origin}
+            run(lambda:db.save_patient(UID,data,e.get('id'),e.get('version')),"Ficha guardada.")
+
+def patients_page():
+    st.title("Pacientes")
+    if ROLE in ('admin','secretaria'):
+        tab1,tab2,tab3=st.tabs(['Buscar y editar','Registrar','Archivados'])
+    else: tab1,tab2,tab3=st.container(),None,None
+    with tab1:
+        p=patient_picker('patient_edit')
+        if p:
+            st.caption(f"Registro actualizado: {p['updated_at'].astimezone(TZ).strftime('%d/%m/%Y %H:%M')}")
+            if ROLE in ('admin','secretaria'):
+                patient_form(p)
+                with st.expander("Archivar paciente"):
+                    reason=st.text_area("Motivo",key='archive_reason')
+                    if st.button("Archivar",type="primary"): run(lambda:db.archive_patient(UID,p['id'],reason),"Paciente archivado.")
+            else:
+                st.write({k:p.get(k) for k in ['document','name','sex','birth_date','phone','email','address','occupation','coverage','origin']})
+    if tab2:
+        with tab2: patient_form()
+    if tab3:
+        with tab3:
+            q=st.text_input("Buscar archivados")
+            archived=[p for p in db.patients(UID,q,archived=True) if not p['active']]
+            if archived:
+                labels={f"{p['name']} · {p['document']}":p for p in archived}; p=labels[st.selectbox("Archivado",labels)]
+                st.warning(f"Motivo: {p['archive_reason'] or 'No registrado'}")
+                reason=st.text_input("Motivo de reactivación")
+                if st.button("Reactivar"): run(lambda:db.archive_patient(UID,p['id'],reason,True),"Paciente reactivado.")
+            else: st.info("No hay pacientes archivados.")
+
+def agenda_page(doctor_only=False):
+    st.title("Mis citas" if doctor_only else "Agenda")
+    start,end=st.date_input("Periodo",value=(now().date(),now().date()+timedelta(days=7)),format='DD/MM/YYYY')
+    status=st.selectbox("Estado",['Todos']+STATUSES)
+    rows=db.appointments(UID,start,end,None if status=='Todos' else status)
+    if rows: st.dataframe(appointment_table(rows),hide_index=True,use_container_width=True)
+    else: st.info("No hay citas en el periodo.")
+    if doctor_only:
+        actionable=[r for r in rows if r['status'] in ('Llegó','En atención')]
+        if actionable:
+            labels={f"{fmt_dt(r['start_at'])} · {r['patient']} · {r['status']}":r for r in actionable}; ap=labels[st.selectbox("Abrir consulta",labels)]
+            if st.button("Continuar atención",type="primary"):
+                eid=run(lambda:db.start_encounter(UID,ap['id']),rerun=False)
+                if eid: st.session_state.encounter_id=eid; st.session_state.page='Historia clínica'; st.rerun()
+        return
+    if ROLE not in ('admin','secretaria'): return
+    t1,t2=st.tabs(['Nueva cita','Gestionar cita'])
+    with t1: booking_form()
+    with t2:
+        if not rows: return
+        labels={f"{fmt_dt(r['start_at'])} · {r['patient']} · {r['doctor']} · {r['status']}":r for r in rows}; ap=labels[st.selectbox("Seleccione",labels,key='manage_ap')]
+        st.write(f"**Notas:** {ap['notes'] or '—'}  ")
+        allowed=[s for s in STATUSES if s!=ap['status']]
+        new_status=st.selectbox("Nuevo estado",allowed)
+        reason=st.text_input("Motivo (obligatorio al cancelar o marcar ausencia)")
+        if st.button("Cambiar estado"): run(lambda:db.change_status(UID,ap['id'],new_status,reason,ap['version']),"Estado actualizado.")
+        if ap['status'] in ('Pendiente','Confirmada','Llegó'):
+            with st.expander("Reagendar"):
+                booking_form(ap)
+
+def booking_form(existing=None):
+    p=patient_picker('book'+str(existing['id'] if existing else 'new')) if not existing else db.get_patient(UID,existing['patient_id'])
+    dm=doctor_map();
+    if not p or not dm: return
+    default=next((name for name,d in dm.items() if existing and d['id']==existing['doctor_id']),next(iter(dm)))
+    dname=st.selectbox("Médico",list(dm),index=list(dm).index(default),key='bd'+str(existing and existing['id'])); d=dm[dname]
+    specialty=st.selectbox("Especialidad",d['specialties'],index=d['specialties'].index(existing['specialty']) if existing and existing['specialty'] in d['specialties'] else 0,key='bs'+str(existing and existing['id']))
+    duration=st.selectbox("Duración",[15,20,30,45,60,90,120],index=[15,20,30,45,60,90,120].index(int((existing['end_at']-existing['start_at']).total_seconds()/60)) if existing and int((existing['end_at']-existing['start_at']).total_seconds()/60) in [15,20,30,45,60,90,120] else 2,key='bu'+str(existing and existing['id']))
+    day=st.date_input("Fecha",value=existing['start_at'].astimezone(TZ).date() if existing else now().date()+timedelta(days=1),min_value=now().date(),format='DD/MM/YYYY',key='bf'+str(existing and existing['id']))
+    slots=db.available_slots(UID,d['id'],p['id'],day,duration,existing['id'] if existing else None)
+    if not slots: st.warning("No hay turnos libres para esa fecha y duración."); return
+    labels={x.strftime('%H:%M'):x for x in slots}; selected=st.selectbox("Hora disponible",labels,key='bt'+str(existing and existing['id']))
+    issfa=p['coverage']=='ISSFA' or 'ISSFA' in (p['origin'] or '')
+    authorization=st.text_input("Número de autorización ISSFA",value=(existing.get('authorization_code') or '') if existing else '',disabled=not issfa,key='ba'+str(existing and existing['id']))
+    expires=st.date_input("Vencimiento autorización",value=existing.get('expires_on') if existing and existing.get('expires_on') else day,disabled=not issfa,format='DD/MM/YYYY',key='be'+str(existing and existing['id']))
+    notes=st.text_area("Observaciones",value=(existing.get('notes') or '') if existing else '',key='bn'+str(existing and existing['id']))
+    if st.button("Guardar reagendamiento" if existing else "Agendar",type="primary",key='save_book'+str(existing and existing['id'])):
+        run(lambda:db.book(UID,p['id'],d['id'],specialty,labels[selected],duration,authorization,expires if issfa else None,notes,existing['id'] if existing else None,existing['version'] if existing else None),"Cita guardada.")
+
+CLINICAL_KEYS=['antecedentes_pers','antecedentes_fam','habitos','motivo','enfermedad_actual','peso','talla','pa','fc','diagnostico','tratamiento','examenes']
+def clinical_form(enc):
+    data=enc['data'] or {}
+    with st.form('clinical_form'):
+        st.subheader(f"Consulta {enc['consultation_type']}")
+        a,b=st.columns(2)
+        with a:
+            antecedentes_pers=st.text_area("Antecedentes personales",value=data.get('antecedentes_pers',''))
+            antecedentes_fam=st.text_area("Antecedentes familiares",value=data.get('antecedentes_fam',''))
+        with b: habitos=st.text_area("Hábitos de vida",value=data.get('habitos',''))
+        motivo=st.text_area("Motivo de consulta *",value=data.get('motivo',''))
+        enfermedad_actual=st.text_area("Enfermedad actual",value=data.get('enfermedad_actual',''))
+        cols=st.columns(5)
+        peso=cols[0].number_input("Peso kg",0.0,500.0,float(data.get('peso') or 0),step=.1)
+        talla=cols[1].number_input("Talla cm",0.0,280.0,float(data.get('talla') or 0),step=.1)
+        pa=cols[2].text_input("PA",value=data.get('pa',''))
+        fc=cols[3].number_input("FC",0,350,int(data.get('fc') or 0))
+        imc=round(peso/(talla/100)**2,2) if peso and talla else None; cols[4].metric("IMC",imc or '—')
+        diagnostico=st.text_area("Diagnóstico *",value=data.get('diagnostico',''))
+        tratamiento=st.text_area("Tratamiento e indicaciones",value=data.get('tratamiento',''))
+        examenes=st.text_area("Exámenes complementarios",value=data.get('examenes',''))
+        save=st.form_submit_button("Guardar borrador")
+        final=st.form_submit_button("Finalizar y cerrar consulta",type="primary")
+        if save or final:
+            payload={'antecedentes_pers':antecedentes_pers,'antecedentes_fam':antecedentes_fam,'habitos':habitos,
+                     'motivo':motivo,'enfermedad_actual':enfermedad_actual,'peso':peso,'talla':talla,'pa':pa,
+                     'fc':fc,'diagnostico':diagnostico,'tratamiento':tratamiento,'examenes':examenes}
+            run(lambda:db.save_encounter(UID,enc['id'],payload,enc['version'],final),"Consulta finalizada." if final else "Borrador guardado.")
+
+def history_page():
+    st.title("Historia clínica")
+    if ROLE=='medico' and st.session_state.get('encounter_id'):
+        enc=db.encounter(UID,st.session_state.encounter_id)
+        if enc['status']=='Borrador': clinical_form(enc)
+        else: st.session_state.pop('encounter_id',None)
+    p=patient_picker('history')
+    if not p: return
+    histories=db.histories(UID,p['id'])
+    if histories:
+        export_key='word_export_'+str(p['id'])
+        if st.button("Preparar expediente Word"):
+            prepared=run(lambda:(db.export_event(UID,'historia_clinica',p['id'],True),word_history(p,histories))[1],rerun=False)
+            if prepared: st.session_state[export_key]=prepared
+        if st.session_state.get(export_key):
+            st.download_button("Descargar expediente Word",st.session_state[export_key],f"Historia_{p['document']}.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    for h in histories:
+        with st.expander(f"{fmt_dt(h['occurred_at'])} · {h['doctor']} · {h['consultation_type']} · {h['status']}"):
+            st.json(h['data'],expanded=True)
+            for a in h['amendments']: st.info(f"Corrección {fmt_dt(a['created_at'])} · {a['author']}\n\n**Motivo:** {a['reason']}\n\n{a['text']}")
+            if ROLE=='medico' and h['status']=='Finalizada' and h['author_id']==UID:
+                reason=st.text_input("Motivo de corrección",key='ar'+str(h['id'])); text=st.text_area("Nota adicional",key='at'+str(h['id']))
+                if st.button("Agregar corrección",key='ab'+str(h['id'])):
+                    encounter_id=h['id']
+                    run(lambda eid=encounter_id,why=reason,note=text:db.amend(UID,eid,why,note),"Corrección registrada.")
+
+def doctors_page():
+    st.title("Médicos y horarios")
+    dm=doctor_map(active=ROLE!='admin')
+    if ROLE=='admin':
+        with st.expander("Registrar médico"):
+            with st.form('new_doctor'):
+                name=st.text_input("Nombre"); specialties=st.text_input("Especialidades separadas por coma"); slot=st.number_input("Turno predeterminado (minutos)",5,240,30)
+                if st.form_submit_button("Registrar"): run(lambda:db.save_doctor(UID,{'name':name,'specialties':specialties.split(','),'slot_minutes':slot,'active':True}),"Médico registrado.")
+    if not dm: st.info("No hay médicos registrados."); return
+    name=st.selectbox("Médico",list(dm)); d=dm[name]; rules,blocks=db.schedules(UID,d['id'])
+    st.write(pd.DataFrame([{'ID':r['id'],'Día':WEEKDAYS[r['weekday']],'Desde':str(r['start_time'])[:5],'Hasta':str(r['end_time'])[:5]} for r in rules]))
+    if ROLE in ('admin','secretaria'):
+        with st.form('add_schedule'):
+            days=st.multiselect("Días",range(7),format_func=lambda x:WEEKDAYS[x]); start=st.time_input("Desde",time(8)); end=st.time_input("Hasta",time(17))
+            if st.form_submit_button("Agregar horario"): run(lambda:db.add_schedule(UID,d['id'],days,start,end),"Horario agregado.")
+        if rules:
+            rid=st.selectbox("Retirar horario",[r['id'] for r in rules],format_func=lambda x:next(f"{WEEKDAYS[r['weekday']]} {str(r['start_time'])[:5]}–{str(r['end_time'])[:5]}" for r in rules if r['id']==x))
+            if st.button("Retirar horario seleccionado"): run(lambda:db.remove_schedule(UID,rid),"Horario retirado.")
+        st.subheader("Ausencias y bloqueos")
+        with st.form('block'):
+            day=st.date_input("Fecha",min_value=now().date(),format='DD/MM/YYYY'); a,b=st.columns(2); start=a.time_input("Inicio",time(8)); end=b.time_input("Fin",time(17)); reason=st.text_input("Motivo")
+            if st.form_submit_button("Bloquear"): run(lambda:db.add_block(UID,d['id'],local_datetime(day,start),local_datetime(day,end),reason),"Bloqueo agregado.")
+        if blocks:
+            st.dataframe(pd.DataFrame([{'ID':b['id'],'Desde':fmt_dt(b['start_at']),'Hasta':fmt_dt(b['end_at']),'Motivo':b['reason']} for b in blocks]),hide_index=True)
+            bid=st.selectbox("Retirar bloqueo",[b['id'] for b in blocks]);
+            if st.button("Retirar bloqueo seleccionado"): run(lambda:db.remove_block(UID,bid),"Bloqueo retirado.")
+    if ROLE=='admin':
+        with st.expander("Editar médico"):
+            with st.form('edit_doctor'):
+                n=st.text_input("Nombre",value=d['name']); specs=st.text_input("Especialidades",value=', '.join(d['specialties'])); slot=st.number_input("Duración predeterminada",5,240,d['slot_minutes']); active=st.checkbox("Activo",value=d['active'])
+                if st.form_submit_button("Guardar"): run(lambda:db.save_doctor(UID,{'name':n,'specialties':specs.split(','),'slot_minutes':slot,'active':active},d['id'],d['version']),"Médico actualizado.")
+
+def users_page():
+    st.title("Usuarios")
+    rows=db.users(UID); st.dataframe(pd.DataFrame(rows),hide_index=True)
+    labels={'Nueva cuenta':None}|{f"{r['name']} · {r['username']}":r for r in rows}; selected=labels[st.selectbox("Cuenta",labels)]
+    dm=doctor_map(); names=list(dm)
+    with st.form('user_form'):
+        username=st.text_input("Usuario",value=selected['username'] if selected else '')
+        name=st.text_input("Nombre",value=selected['name'] if selected else '')
+        roles=['admin','secretaria','medico']; role=st.selectbox("Rol",roles,index=roles.index(selected['role']) if selected else 1)
+        current_doc=next((n for n,d in dm.items() if selected and d['id']==selected['doctor_id']),names[0] if names else '')
+        dname=st.selectbox("Médico vinculado",names,index=names.index(current_doc) if current_doc in names else 0,disabled=not names)
+        active=st.checkbox("Activo",value=selected['active'] if selected else True)
+        password=st.text_input("Contraseña temporal (dejar vacía para conservarla)",type="password")
+        if st.form_submit_button("Guardar cuenta",type="primary"):
+            data={'username':username,'name':name,'role':role,'doctor_id':dm[dname]['id'] if role=='medico' and names else None,'active':active}
+            run(lambda:db.save_user(UID,data,selected['id'] if selected else None,password or None),"Cuenta guardada.")
+
+def reports_page(full=False):
+    st.title("Reportes y respaldo" if full else "Reportes")
+    first,last=st.date_input("Periodo del reporte",value=(now().date().replace(day=1),now().date()),format='DD/MM/YYYY',key='report_dates')
+    rows=db.appointments(UID,first,last)
+    if st.button("Preparar agenda Excel"):
+        prepared=run(lambda:(db.export_event(UID,'agenda'),excel({'Agenda':rows}))[1],rerun=False)
+        if prepared: st.session_state.report_excel=prepared
+    if st.session_state.get('report_excel'):
+        st.download_button("Descargar agenda Excel",st.session_state.report_excel,f"Agenda_{first}_{last}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if full:
+        if st.button("Preparar respaldo recuperable"):
+            prepared=run(lambda:db.backup(UID),rerun=False)
+            if prepared: st.session_state.backup_zip=prepared
+        if st.session_state.get('backup_zip'):
+            st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
+        st.caption("El respaldo recuperable contiene todas las tablas de la versión 2 y una huella de integridad.")
+
+def admin_page():
+    st.title("Administración")
+    tab1,tab2,tab3=st.tabs(['Actualización de datos anteriores','Reglas clínicas','Registro de actividad'])
+    with tab1:
+        counts,archived=legacy_preview(db,UID); st.write("Registros detectados en las tablas anteriores:",counts)
+        st.caption("La importación conserva las tablas anteriores, guarda una copia JSON de cada fila y puede repetirse sin duplicar lo ya importado.")
+        if st.button("Importar datos anteriores",type="primary"): run(lambda:import_legacy(db,UID),"Importación ejecutada.")
+        problems=legacy_issues(db,UID)
+        if problems:
+            st.warning(f"{len(problems)} registros requieren revisión manual.")
+            st.dataframe(pd.DataFrame([{'Tabla':r['source_table'],'Clave':r['source_key'],'Problema':r['issue']} for r in problems]),hide_index=True)
+            st.download_button("Descargar pendientes",excel({'Pendientes':problems}),"Importacion_pendientes.xlsx")
+    with tab2:
+        rule=db.settings(UID); labels={'specialty':'Por especialidad','global':'Por historial general'}; choice=st.radio("Cómo asignar C1 / SUB",labels,index=list(labels).index(rule),format_func=lambda x:labels[x])
+        if st.button("Guardar regla"): run(lambda:db.settings(UID,choice),"Regla guardada.")
+    with tab3:
+        logs=db.audit_rows(UID); st.dataframe(pd.DataFrame(logs),hide_index=True,use_container_width=True)
 
 try:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-except psycopg2.Error as e:
-    st.error(f"No se pudo conectar o preparar las tablas de Supabase: {e}")
-    st.stop()
-
-# --- CONFIGURACIÓN DE TEMA CLARO ---
-st.markdown("""
-    <style>
-    .main { background-color: #FFFFFF; color: #000000; }
-    .stSidebar { background-color: #F8F9FA; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- INICIALIZACIÓN DE DATOS INICIALES (DISPONIBILIDAD) ---
-def verificar_y_poblar_disponibilidad():
-    try:
-        cursor.execute("SELECT COUNT(*) FROM disponibilidad")
-        if cursor.fetchone()[0] == 0:
-            default_data = [
-                ("Dra. Kanie Collado", "Alergología", "Lunes y Miércoles", "08:00 - 13:00"),
-                ("Dr. Norberto Carballosa", "Anestesiología", "Martes y Jueves", "09:00 - 14:00"),
-                ("Dra. Lisset Alfonso", "Cardiología", "Lunes, Miércoles y Viernes", "08:00 - 12:00"),
-                ("Dr. Miguel Mederos", "Dermatología", "Martes y Viernes", "13:00 - 18:00"),
-                ("Dr. Frank Medina", "Endocrinología", "Martes y Jueves", "08:00 - 12:00"),
-                ("Dr. Miguel Marrero", "Endocrinología", "Lunes y Miércoles", "14:00 - 18:00"),
-                ("Dra. Gabriela Vélez", "Endocrinología", "Viernes", "08:00 - 13:00"),
-                ("Dr. Pavel Mili", "Fisiatría", "Lunes y Jueves", "08:00 - 13:00"),
-                ("Dr. Yunio Torres", "Fisiatría", "Martes y Miércoles", "13:00 - 17:00"),
-                ("Dr. Frank Pérez", "Gastroenterología", "Lunes a Viernes", "08:00 - 12:00"),
-                ("Dra. Mildred", "Geriatría", "Miércoles y Viernes", "09:00 - 14:00"),
-                ("Dr. Alejandro Argiz", "Ginecología", "Lunes y Martes", "08:00 - 13:00"),
-                ("Dra. Marilyn Martínez", "Ginecología", "Miércoles y Jueves", "13:00 - 18:00"),
-                ("Dra. Osmarie Barbosa", "Logopedia / Medicina General", "Lunes a Viernes", "08:00 - 16:00"),
-                ("Dr. Yoandis Pérez", "Medicina General", "Lunes a Viernes", "08:00 - 16:00"),
-                ("Dra. Ailicec Arias", "Medicina General / Pediatría", "Lunes a Viernes", "08:00 - 16:00"),
-                ("Dr. Ovadiz Pérez", "Medicina Interna", "Lunes, Miércoles y Viernes", "08:00 - 13:00"),
-                ("Dra. Eva Barbosa", "Neumología", "Martes y Jueves", "09:00 - 14:00"),
-                ("Dr. Dayron Douglas Calvo", "Neurología", "Lunes y Miércoles", "09:00 - 13:00"),
-                ("Lcdo. Andrés Hidrobo", "Nutrición", "Martes y Jueves", "08:00 - 15:00"),
-                ("Dr. Fernando Enríquez", "Otorrinolaringología", "Lunes, Miércoles y Viernes", "13:00 - 17:00"),
-                ("Dra. María Cristina Torres", "Pediatría", "Lunes a Viernes", "08:00 - 13:00"),
-                ("Lcdo. Jerson Rodríguez", "Psicología", "Lunes a Viernes", "09:00 - 17:00"),
-                ("Dra. Yulca Rosales", "Psiquiatría", "Martes y Jueves", "14:00 - 18:00"),
-                ("Dr. Dennis Pucha", "Reumatología", "Lunes y Miércoles", "08:00 - 12:00"),
-                ("Dr. Rafael Echavarría", "Reumatología", "Martes y Jueves", "13:00 - 17:00"),
-                ("Dr. Antonio Leal", "Traumatología", "Lunes a Viernes", "08:00 - 14:00"),
-                ("Dr. William Fonseca", "Urología", "Lunes, Miércoles y Viernes", "08:00 - 13:00")
-            ]
-            for d in default_data:
-                cursor.execute("INSERT INTO disponibilidad (medico, especialidad, dias, horas) VALUES (%s, %s, %s, %s) ON CONFLICT (medico) DO NOTHING", d)
-            conn.commit()
-    except psycopg2.Error as err:
-        conn.rollback()
-        st.error(f"No se pudo preparar la disponibilidad de médicos: {err}")
-        st.stop()
-
-verificar_y_poblar_disponibilidad()
-
-# --- FUNCIONES AUXILIARES PARA CARGAR DISPONIBILIDAD DESDE DB ---
-def obtener_medicos_info():
-    try:
-        cursor.execute("SELECT medico, especialidad, dias, horas FROM disponibilidad")
-        rows = cursor.fetchall()
-        info = {}
-        for r in rows:
-            info[r[0]] = {"esp": r[1], "dias": r[2], "horas": r[3]}
-        return info
-    except psycopg2.Error as err:
-        conn.rollback()
-        st.error(f"No se pudo cargar la disponibilidad de médicos: {err}")
-        st.stop()
-
-def obtener_medicos_especialidades():
-    medicos_info = obtener_medicos_info()
-    esp_dict = {}
-    for doc, info in medicos_info.items():
-        esp = info["esp"]
-        if esp not in esp_dict:
-            esp_dict[esp] = []
-        esp_dict[esp].append(doc)
-    return esp_dict
-
-# --- SISTEMA DE AUTENTICACIÓN POR ROLES ---
-def obtener_usuarios():
-    medicos_info = obtener_medicos_info()
-    users = {
-        "Abigail Ruiz (Secretaria)": {"pass": "sec2026", "role": "secretaria"},
-        "Administrador": {"pass": "admin2026", "role": "admin"}
-    }
-    for doc in medicos_info.keys():
-        users[f"{doc} ({medicos_info[doc]['esp']})"] = {"pass": "med123", "role": "medico"}
-    return users
-
-USERS = obtener_usuarios()
-
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-    st.session_state["user_name"] = ""
-    st.session_state["user_role"] = ""
-
-if not st.session_state["logged_in"]:
-    st.title("🏥 Medisuport - Control de Acceso")
-    st.write("Seleccione su perfil e ingrese su contraseña para continuar.")
-  
-    with st.form("login_form"):
-        selected_user = st.selectbox("Seleccionar Usuario / Rol", list(USERS.keys()))
-        password_input = st.text_input("Contraseña", type="password")
-        submit_login = st.form_submit_button("Ingresar al Sistema")
-    
-        if submit_login:
-            if password_input == USERS[selected_user]["pass"]:
-                st.session_state["logged_in"] = True
-                st.session_state["user_name"] = selected_user
-                st.session_state["user_role"] = USERS[selected_user]["role"]
-                st.rerun()
-            else:
-                st.error("Contraseña incorrecta. Intente nuevamente.")
-    st.stop()
-
-# --- BARRA LATERAL Y NAVEGACIÓN ---
-st.sidebar.title("Medisuport 🏥")
-st.sidebar.write(f"👤 **Usuario:** {st.session_state['user_name']}")
-if st.sidebar.button("Cerrar Sesión"):
-    st.session_state["logged_in"] = False
-    st.rerun()
-
-st.sidebar.divider()
-role = st.session_state["user_role"]
-
-if role == "secretaria":
-    menu = ["Registrar Paciente", "Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Agendamiento de Citas", "Respaldo y Datos"]
-elif role == "medico":
-    menu = ["Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Ver Agenda de Citas", "Consulta Medica (Historial)"]
-else:
-    menu = ["Registrar Paciente", "Buscar y Gestionar Pacientes", "Listado de Pacientes", "Disponibilidad de Medicos", "Agendamiento de Citas", "Consulta Medica (Historial)", "Respaldo y Datos"]
-
-choice = st.sidebar.selectbox("Seleccione opción", menu)
-
-# --- FUNCIÓN AUXILIAR PARA GENERAR WORD FORMATEADO ---
-def generar_documento_word(info_p, visitas, codigo_estado, historial_p):
-    doc = docx.Document()
-    for section in doc.sections:
-        section.top_margin = Inches(1)
-        section.bottom_margin = Inches(1)
-        section.left_margin = Inches(1)
-        section.right_margin = Inches(1)
-
-    p_head = doc.add_paragraph()
-    p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_head = p_head.add_run("SISTEMA MÉDICO CLÍNICO - MEDISUPORT\nEXPEDIENTE DE HISTORIA CLÍNICA")
-    run_head.font.name = 'Arial'
-    run_head.font.size = Pt(14)
-    run_head.font.bold = True
-    run_head.font.color.rgb = RGBColor(0, 51, 102)
-
-    doc.add_paragraph("-------------------------------------------------------------------------------------------------------------")
-
-    p_datos_title = doc.add_paragraph()
-    run_dt = p_datos_title.add_run("1. DATOS DE IDENTIFICACIÓN Y FILIACIÓN")
-    run_dt.font.bold = True
-    run_dt.font.size = Pt(12)
-    run_dt.font.color.rgb = RGBColor(0, 51, 102)
-
-    p_info = doc.add_paragraph()
-    p_info.add_run("• Nombre Completo: ").bold = True
-    p_info.add_run(f"{info_p[1]}\n") # En postgres el ID es serial, nombre es indice 1 o segun orden
-    p_info.add_run("• Documento de Identidad: ").bold = True
-    p_info.add_run(f"{info_p[0]}\n")
-    p_info.add_run("• Sexo: ").bold = True
-    p_info.add_run(f"{info_p[2]}    |   ")
-    p_info.add_run("Fecha de Nacimiento: ").bold = True
-    p_info.add_run(f"{info_p[3]}\n")
-    p_info.add_run("• Domicilio: ").bold = True
-    p_info.add_run(f"{info_p[4]}\n")
-    p_info.add_run("• Teléfono: ").bold = True
-    p_info.add_run(f"{info_p[5]}    |   ")
-    p_info.add_run("Correo: ").bold = True
-    p_info.add_run(f"{info_p[6]}\n")
-    p_info.add_run("• Ocupación: ").bold = True
-    p_info.add_run(f"{info_p[7]}    |   ")
-    p_info.add_run("Sistema de Salud: ").bold = True
-    p_info.add_run(f"{info_p[8]}\n")
-    p_info.add_run("• Origen de Registro: ").bold = True
-    p_info.add_run(f"{info_p[9] if len(info_p) > 9 else 'N/A'}\n")
-    p_info.add_run("• Resumen de Visitas: ").bold = True
-    p_info.add_run(f"Total de Atenciones: {visitas}  (Clasificación Actual: {codigo_estado})\n")
-
-    doc.add_paragraph("-------------------------------------------------------------------------------------------------------------")
-
-    p_hist_title = doc.add_paragraph()
-    run_ht = p_hist_title.add_run("2. EVOLUCIÓN Y REGISTRO DE ATENCIONES MÉDICAS")
-    run_ht.font.bold = True
-    run_ht.font.size = Pt(12)
-    run_ht.font.color.rgb = RGBColor(0, 51, 102)
-
-    if historial_p:
-        for idx, h in enumerate(historial_p, 1):
-            p_atn = doc.add_paragraph()
-            p_atn.add_run(f"Atención #{len(historial_p) - idx + 1} - Fecha: {h[0]} [Código: {h[2]}]\n").bold = True
-            p_atn.add_run(f"Médico Tratante: {h[1]}\n").italic = True
-            
-            p_atn.add_run("  - Motivo de Consulta: ").bold = True
-            p_atn.add_run(f"{h[5]}\n")
-            p_atn.add_run("  - Enfermedad Actual / Anamnesis: ").bold = True
-            p_atn.add_run(f"{h[6]}\n")
-            p_atn.add_run("  - Antecedentes Personales: ").bold = True
-            p_atn.add_run(f"{h[3]} | Familiares: {h[4]} | Hábitos: (No especificado)\n")
-            p_atn.add_run("  - Signos Vitales y Antropometría: ").bold = True
-            p_atn.add_run(f"Peso: {h[7]} kg | Talla: {h[8]} cm | PA: {h[9]} | FC: {h[10]} lpm | IMC: {h[11]}\n")
-            p_atn.add_run("  - Diagnóstico: ").bold = True
-            p_atn.add_run(f"{h[12]}\n")
-            p_atn.add_run("  - Tratamiento / Receta: ").bold = True
-            p_atn.add_run(f"{h[13]}\n")
-            p_atn.add_run("  - Exámenes Complementarios: ").bold = True
-            p_atn.add_run(f"{h[14]}\n")
-            
-            doc.add_paragraph(".............................................................................................................................")
-    else:
-        doc.add_paragraph("El paciente no registra atenciones médicas previas en el sistema.")
-
-    file_stream = io.BytesIO()
-    doc.save(file_stream)
-    file_stream.seek(0)
-    return file_stream.getvalue()
-
-# --- MÓDULO 1: REGISTRAR PACIENTE ---
-if choice == "Registrar Paciente":
-    st.subheader("➕ Registro de Nuevo Paciente - Medisuport")
-    with st.form("form_paciente"):
-        st.write("### Datos de Identificación y Contacto")
-        col1, col2 = st.columns(2)
-        with col1:
-            cedula = st.text_input("Número de Documento / Cédula / Pasaporte")
-            nombre = st.text_input("Nombre Completo")
-            sexo = st.selectbox("Sexo", ["Masculino", "Femenino", "Otro"])
-            f_nac = st.date_input("Fecha de Nacimiento", datetime(1990, 1, 1))
-            telefono = st.text_input("Teléfono / Celular")
-        with col2:
-            correo = st.text_input("Correo Electrónico")
-            domicilio = st.text_input("Domicilio / Dirección")
-            ocupacion = st.text_input("Ocupación")
-            prevision = st.selectbox("Sistema de Salud / Previsión", ["Particular / Propio de la Clínica", "ISSFA", "IESS", "MSP", "Seguro Privado"])
-            origen = st.selectbox("Origen de Registro", ["Propio de la Clínica", "Prestador Externo ISSFA"])
-
-        guardar = st.form_submit_button("Guardar Ficha del Paciente")
-        
-        if guardar:
-            if cedula and nombre:
-                try:
-                    cursor.execute("""
-                        INSERT INTO pacientes (cedula, nombre, sexo, fecha_nacimiento, domicilio, telefono, correo, ocupacion, prevision, origen) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (cedula, nombre, sexo, str(f_nac), domicilio, telefono, correo, ocupacion, prevision, origen))
-                    conn.commit()
-                    st.success(f"¡Paciente {nombre} registrado con éxito en la nube!")
-                except Exception as err:
-                    conn.rollback()
-                    st.error(f"Error: Ya existe un paciente registrado con este número de documento o faltó configurar las columnas en Supabase. ({err})")
-            else:
-                st.warning("Complete al menos el número de documento y el nombre completo.")
-
-# --- MÓDULO 2: BUSCAR Y GESTIONAR PACIENTES ---
-elif choice == "Buscar y Gestionar Pacientes":
-    st.subheader("🔍 Ficha Clínica y Búsqueda de Pacientes")
-    cursor.execute("SELECT cedula, nombre FROM pacientes")
-    pacientes_db = cursor.fetchall()
-
-    if pacientes_db:
-        opciones_busqueda = {f"{p[1]} (Doc: {p[0]})": p[0] for p in pacientes_db}
-        paciente_elegido = st.selectbox("Seleccione Paciente", list(opciones_busqueda.keys()))
-        cedula_buscar = opciones_busqueda[paciente_elegido]
-
-        if st.button("Consultar Ficha Completa"):
-            cursor.execute("SELECT cedula, nombre, sexo, fecha_nacimiento, domicilio, telefono, correo, ocupacion, prevision, origen FROM pacientes WHERE cedula = %s", (cedula_buscar,))
-            info_p = cursor.fetchone()
-
-            cursor.execute("SELECT COUNT(*) FROM historial WHERE cedula_paciente = %s", (cedula_buscar,))
-            visitas = cursor.fetchone()[0]
-            codigo_estado = "C1" if visitas == 0 else "SUB"
-
-            cursor.execute("""
-                SELECT fecha_atencion, medico_atn, tipo_consulta, antecedentes_pers, antecedentes_fam,  
-                       motivo, enfermedad_actual, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes 
-                FROM historial WHERE cedula_paciente = %s ORDER BY id DESC
-            """, (cedula_buscar,))
-            historial_p = cursor.fetchall()
-
-            if info_p:
-                st.success("¡Ficha de Paciente Encontrada!")
-                st.write(f"**Nombre:** {info_p[1]} | **Sexo:** {info_p[2]} | **F. Nacimiento:** {info_p[3]}")
-                st.write(f"**Documento:** {info_p[0]} | **Teléfono:** {info_p[5]} | **Correo:** {info_p[6]}")
-                st.write(f"**Domicilio:** {info_p[4]} | **Ocupación:** {info_p[7]} | **Sistema de Salud:** {info_p[8]}")
-                st.info(f"📊 **Total de Atenciones Previas:** {visitas} | **Código Actual:** `{codigo_estado}`")
-
-                word_bytes = generar_documento_word(info_p, visitas, codigo_estado, historial_p)
-
-                st.download_button(
-                    label="📥 Descargar Historia Clínica en Formato Word (.docx)",
-                    data=word_bytes,
-                    file_name=f"Historia_Clinica_{info_p[0]}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
-
-                if historial_p:
-                    st.write("### 📂 Historial de Atenciones Clínicas Anteriores")
-                    for h in historial_p:
-                        with st.expander(f"Atención del {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
-                            st.write(f"**Motivo de Consulta:** {h[5]}")
-                            st.write(f"**Enfermedad Actual / Anamnesis:** {h[6]}")
-                            st.write(f"**Antecedentes Personales:** {h[3]} | **Familiares:** {h[4]}")
-                            st.write(f"**Signos Vitales y Antropometría:** Peso: {h[7]} kg | Talla: {h[8]} cm | PA: {h[9]} | FC: {h[10]} lpm | IMC: {h[11]}")
-                            st.write(f"**Diagnóstico:** {h[12]}")
-                            st.write(f"**Tratamiento y Receta:** {h[13]}")
-                            st.write(f"**Resultados de Exámenes:** {h[14]}")
-                else:
-                    st.warning("Este paciente no cuenta con consultas previas registradas (Le corresponde código C1).")
-
-        st.divider()
-        if role in ["secretaria", "admin"]:
-            with st.expander("🗑️ Zona de Peligro: Borrar Paciente por Error"):
-                if st.button("Eliminar Definitivamente a este Paciente", type="primary"):
-                    cursor.execute("DELETE FROM historial WHERE cedula_paciente = %s", (cedula_buscar,))
-                    cursor.execute("DELETE FROM citas WHERE cedula_paciente = %s", (cedula_buscar,))
-                    cursor.execute("DELETE FROM pacientes WHERE cedula = %s", (cedula_buscar,))
-                    conn.commit()
-                    st.success("Paciente eliminado correctamente.")
-                    st.rerun()
-    else:
-        st.info("No hay pacientes registrados en el sistema.")
-
-# --- MÓDULO 3: LISTADO GENERAL DE PACIENTES ---
-elif choice == "Listado de Pacientes":
-    st.subheader("📋 Base de Datos General de Pacientes")
-    df_p = pd.read_sql_query("SELECT cedula, nombre, sexo, telefono, correo, prevision, origen FROM pacientes", conn)
-
-    if not df_p.empty:
-        st.dataframe(df_p, use_container_width=True)
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_p.to_excel(writer, sheet_name='Pacientes', index=False)
-        excel_data = output.getvalue()
-
-        st.download_button(
-            label="📥 Descargar Listado de Pacientes en Excel (.xlsx)",
-            data=excel_data,
-            file_name=f"medisuport_pacientes_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.info("No hay pacientes registrados.")
-
-# --- MÓDULO GESTIÓN DE DISPONIBILIDAD ---
-elif choice == "Disponibilidad de Medicos":
-    st.subheader("📅 Gestión de Disponibilidad y Horarios de Médicos")
-    st.write("Visualice y actualice los días y horas de atención según el día a día institucional.")
-  
-    MEDICOS_INFO = obtener_medicos_info()
-    MEDICOS_ESPECIALIDADES = obtener_medicos_especialidades()
-
-    esp_filtro = st.selectbox("Filtrar por Especialidad", ["Todas"] + list(MEDICOS_ESPECIALIDADES.keys()))
-  
-    data_dispo = []
-    for doc, info in MEDICOS_INFO.items():
-        if esp_filtro == "Todas" or info["esp"] == esp_filtro:
-            data_dispo.append({
-                "Médico": doc,
-                "Especialidad": info["esp"],
-                "Días de Atención": info["dias"],
-                "Horario": info["horas"]
-            })
-  
-    df_dispo = pd.DataFrame(data_dispo)
-    st.dataframe(df_dispo, use_container_width=True)
-
-    if role in ["secretaria", "admin"]:
-        st.divider()
-        st.write("### 🛠️ Actualizar Disponibilidad Diaria del Médico")
-        with st.form("form_editar_disponibilidad"):
-            medico_a_editar = st.selectbox("Seleccionar Médico", list(MEDICOS_INFO.keys()))
-            info_actual = MEDICOS_INFO[medico_a_editar]
-            
-            nuevo_dia = st.text_input("Días de Atención", value=info_actual["dias"])
-            nuevo_horario = st.text_input("Horario", value=info_actual["horas"])
-            
-            actualizar_disp = st.form_submit_button("Guardar Cambios de Disponibilidad")
-            
-            if actualizar_disp:
-                cursor.execute("""
-                    UPDATE disponibilidad 
-                    SET dias = %s, horas = %s 
-                    WHERE medico = %s
-                """, (nuevo_dia, nuevo_horario, medico_a_editar))
-                conn.commit()
-                st.success(f"✅ ¡Disponibilidad actualizada con éxito para {medico_a_editar}!")
-                st.rerun()
-
-# --- MÓDULO 4: AGENDAMIENTO DE CITAS ---
-elif choice in ["Agendamiento de Citas", "Ver Agenda de Citas"]:
-    st.subheader("📅 Agendamiento de Citas Médicas e Institucionales")
-    
-    MEDICOS_INFO = obtener_medicos_info()
-    MEDICOS_ESPECIALIDADES = obtener_medicos_especialidades()
-  
-    if role in ["secretaria", "admin"]:
-        cursor.execute("SELECT cedula, nombre, origen FROM pacientes")
-        pacientes = cursor.fetchall()
-        pacientes_dict = {f"{p[1]} (Doc: {p[0]} - {p[2]})": p[0] for p in pacientes}
-
-        st.write("### Agendar Nueva Cita (Verificación de Disponibilidad y Código ISSFA)")
-        if pacientes_dict:
-            paciente_sel = st.selectbox("Seleccionar Paciente", list(pacientes_dict.keys()), key="select_paciente_cita")
-            cedula_act = pacientes_dict[paciente_sel]
-        else:
-            st.warning("Debe registrar pacientes primero.")
-            cedula_act = ""
-
-        especialidad_sel = st.selectbox("Especialidad Médica", list(MEDICOS_ESPECIALIDADES.keys()), key="select_especialidad_cita")
-        medicos_disponibles = MEDICOS_ESPECIALIDADES[especialidad_sel]
-    
-        medico_sel = st.selectbox("Médico Tratante", medicos_disponibles, key="select_medico_cita")
-        info_med = MEDICOS_INFO[medico_sel]
-        st.info(f"💡 **Disponibilidad actual en el sistema para {medico_sel}:** {info_med['dias']} en horario de {info_med['horas']}.")
-
-        with st.form("form_cita_real"):
-            col1, col2 = st.columns(2)
-            with col1:
-                fecha_cita = st.date_input("Fecha de la Cita", datetime.now())
-                vencimiento_issfa = st.date_input("Fecha de Vencimiento del Código ISSFA", datetime.now())
-            with col2:
-                hora_cita = st.time_input("Hora de la Cita")
-                observaciones = st.text_input("Observaciones / Notas iniciales")
-
-            submitted = st.form_submit_button("Agendar Cita")
-      
-            if submitted and cedula_act:
-                str_fecha = str(fecha_cita)
-                str_hora = str(hora_cita)
-                str_venc = str(vencimiento_issfa)
-        
-                cursor.execute("SELECT COUNT(*) FROM citas WHERE medico = %s AND fecha = %s AND hora = %s", (medico_sel, str_fecha, str_hora))
-                conf_count = cursor.fetchone()[0]
-
-                if conf_count > 0:
-                    st.error(f"❌ El/La Dr(a). {medico_sel} ya tiene una cita agendada a esa hora y fecha exactas.")
-                else:
-                    cursor.execute("""
-                        INSERT INTO citas (cedula_paciente, fecha, hora, medico, especialidad, vencimiento_issfa, estado, observaciones) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (cedula_act, str_fecha, str_hora, medico_sel, especialidad_sel, str_venc, "Agendada", observaciones))
-                    conn.commit()
-                    st.success(f"✅ ¡Cita agendada con éxito para el Dr(a). {medico_sel} el {str_fecha} a las {str_hora}!")
-        st.divider()
-
-    st.subheader("📋 Listado y Gestión de Citas (Reagendamientos y Estado)")
-    if role == "medico":
-        nombre_sesion = st.session_state['user_name']
-        doctor_limpio = nombre_sesion.split(" (")[0]
-        cursor.execute("""
-            SELECT c.id, c.fecha, c.hora, p.nombre, c.medico, c.especialidad, c.vencimiento_issfa, c.estado, c.observaciones 
-            FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula 
-            WHERE c.medico = %s
-        """, (doctor_limpio,))
-        st.info(f"Mostrando únicamente las citas asignadas a **{doctor_limpio}**.")
-    else:
-        cursor.execute("""
-            SELECT c.id, c.fecha, c.hora, p.nombre, c.medico, c.especialidad, c.vencimiento_issfa, c.estado, c.observaciones 
-            FROM citas c JOIN pacientes p ON c.cedula_paciente = p.cedula
-        """)
-
-    citas_data = cursor.fetchall()
-  
-    if citas_data:
-        df_citas_view = pd.DataFrame(citas_data, columns=["ID", "Fecha", "Hora", "Paciente", "Médico", "Especialidad", "Vencimiento ISSFA", "Estado", "Observaciones"])
-        st.dataframe(df_citas_view.drop(columns=["ID"]), use_container_width=True)
-
-        if role in ["secretaria", "admin"]:
-            st.divider()
-            with st.expander("🛠️ Reagendar, Modificar o Cancelar una Cita"):
-                citas_dict = {f"Cita ID: {c[0]} | Paciente: {c[3]} | Fecha: {c[1]} {c[2]} | Dr(a). {c[4]}": c[0] for c in citas_data}
-                cita_sel_mod = st.selectbox("Seleccione la cita a gestionar", list(citas_dict.keys()))
-                id_cita_sel = citas_dict[cita_sel_mod]
-
-                cursor.execute("SELECT fecha, hora, medico, especialidad, vencimiento_issfa, observaciones FROM citas WHERE id = %s", (id_cita_sel,))
-                c_actual = cursor.fetchone()
-
-                if c_actual:
-                    st.write(f"**Cita Actual:** {c_actual[0]} a las {c_actual[1]} con {c_actual[2]} ({c_actual[3]})")
-          
-                    with st.form("form_reagendar_cita"):
-                        st.write("### Módulo de Reagendamiento")
-                        nueva_fecha = st.date_input("Nueva Fecha de la Cita", datetime.strptime(c_actual[0], "%Y-%m-%d").date())
-                        nueva_hora = st.time_input("Nueva Hora de la Cita", datetime.strptime(c_actual[1], "%H:%M:%S").time() if len(c_actual[1]) > 5 else datetime.strptime(c_actual[1], "%H:%M").time())
-                        nuevo_venc = st.date_input("Actualizar Vencimiento Código ISSFA", datetime.strptime(c_actual[4], "%Y-%m-%d").date() if c_actual[4] else datetime.now())
-                        motivo_reagenda = st.text_input("Motivo de Reagendamiento", value=c_actual[5] if c_actual[5] else "")
-            
-                        if st.form_submit_button("Guardar Reagendamiento"):
-                            cursor.execute("""
-                                UPDATE citas 
-                                SET fecha = %s, hora = %s, vencimiento_issfa = %s, estado = %s, observaciones = %s 
-                                WHERE id = %s
-                            """, (str(nueva_fecha), str(nueva_hora), str(nuevo_venc), "Reagendada", motivo_reagenda, id_cita_sel))
-                            conn.commit()
-                            st.success("¡Cita reagendada con éxito!")
-                            st.rerun()
-
-                    if st.button("🗑️ Cancelar esta Cita por Completo", type="primary"):
-                        cursor.execute("DELETE FROM citas WHERE id = %s", (id_cita_sel,))
-                        conn.commit()
-                        st.success("Cita eliminada.")
-                        st.rerun()
-    else:
-        st.info("No hay citas registradas.")
-
-# --- MÓDULO 5: CONSULTA MÉDICA E HISTORIAL ---
-elif choice in ["Consulta Medica (Historial)", "Consulta Médica (Historial)"]:
-    st.subheader("🩺 Atención Médica y Registro Clínico - Medisuport")
-    cursor.execute("SELECT cedula, nombre FROM pacientes")
-    pacientes = cursor.fetchall()
-    pacientes_dict = {f"{p[1]} (Doc: {p[0]})": p[0] for p in pacientes}
-
-    if pacientes_dict:
-        paciente_sel = st.selectbox("Seleccione Paciente en Consulta", list(pacientes_dict.keys()))
-        cedula_paciente = pacientes_dict[paciente_sel]
-
-        cursor.execute("SELECT cedula, nombre, sexo, fecha_nacimiento, domicilio, telefono, correo, ocupacion, prevision, origen FROM pacientes WHERE cedula = %s", (cedula_paciente,))
-        p_info = cursor.fetchone()
-    
-        cursor.execute("SELECT COUNT(*) FROM historial WHERE cedula_paciente = %s", (cedula_paciente,))
-        conteo_atenciones = cursor.fetchone()[0]
-
-        tipo_consulta_auto = "C1" if conteo_atenciones == 0 else "SUB"
-
-        st.info(f"**Paciente:** {p_info[1]} | **Doc:** {p_info[0]} | **Sistema de Salud / Previsión:** {p_info[8] if p_info[8] else 'No especificado'}")
-        st.warning(f"📊 **Historial de visitas:** Ha asistido {conteo_atenciones} vez/veces previa(s). **Código Asignado para esta Consulta:** `{tipo_consulta_auto}` ({'Primera Vez' if tipo_consulta_auto == 'C1' else 'Subsecuente'})")
-
-        with st.form("form_atencion_completa"):
-            st.write("### 1. Antecedentes Clínicos")
-            col1, col2 = st.columns(2)
-            with col1:
-                antecedentes_pers = st.text_area("Antecedentes Personales (Alergias, Crónicas, Cirugías)")
-                antecedentes_fam = st.text_area("Antecedentes Heredo-Familiares")
-            with col2:
-                habitos = st.text_area("Hábitos de Vida (Tabaco, Alcohol, Actividad física)")
-
-            st.write("### 2. Registro de Atención Actual")
-            motivo = st.text_area("Motivo de Consulta")
-            enfermedad_actual = st.text_area("Enfermedad Actual / Anamnesis (Síntomas y evolución)")
-
-            st.write("### 3. Examen Físico y Signos Vitales")
-            c1, c2, c3, c4, c5 = st.columns(5)
-            with c1:
-                peso = st.text_input("Peso (kg)")
-            with c2:
-                talla = st.text_input("Talla (cm)")
-            with c3:
-                pa = st.text_input("Presión Arterial (PA)")
-            with c4:
-                fc = st.text_input("Frecuencia Cardíaca (FC)")
-            with c5:
-                imc = st.text_input("Índice Masa Corporal (IMC)")
-
-            st.write("### 4. Conclusión e Indicaciones")
-            diagnostico = st.text_area("Diagnóstico o Impresión Diagnóstica")
-            tratamiento = st.text_area("Indicaciones y Plan de Tratamiento (Receta, medicamentos)")
-            examenes = st.text_area("Resultados de Exámenes / Laboratorios / Imágenes")
-
-            finalizar = st.form_submit_button("Guardar Evolución y Cierre de Consulta")
-
-            if finalizar:
-                cursor.execute("""
-                    INSERT INTO historial (
-                        cedula_paciente, fecha_atencion, medico_atn, tipo_consulta, 
-                        antecedentes_pers, antecedentes_fam, motivo, enfermedad_actual, 
-                        peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    cedula_paciente, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state['user_name'], tipo_consulta_auto,
-                    antecedentes_pers, antecedentes_fam, motivo, enfermedad_actual,
-                    peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes
-                ))
-                conn.commit()
-                st.success(f"¡Atención clínica guardada con éxito en la nube bajo el código `{tipo_consulta_auto}`!")
-                st.rerun()
-
-        st.divider()
-        st.subheader("📂 Historial de Consultas Anteriores del Paciente")
-        cursor.execute("""
-            SELECT fecha_atencion, medico_atn, tipo_consulta, motivo, enfermedad_actual, 
-                   antecedentes_pers, antecedentes_fam, peso, talla, pa, fc, imc, diagnostico, tratamiento, examenes 
-            FROM historial WHERE cedula_paciente = %s ORDER BY id DESC
-        """, (cedula_paciente,))
-        historicos = cursor.fetchall()
-
-        if historicos:
-            for h in historicos:
-                with st.expander(f"Fecha: {h[0]} | Código: {h[2]} | Médico: {h[1]}"):
-                    st.write(f"**Motivo:** {h[3]}")
-                    st.write(f"**Enfermedad Actual:** {h[4]}")
-                    st.write(f"**Antecedentes Personales:** {h[5]} | **Familiares:** {h[6]}")
-                    st.write(f"**Signos Vitales:** Peso: {h[7]}kg | Talla: {h[8]}cm | PA: {h[9]} | FC: {h[10]} | IMC: {h[11]}")
-                    st.write(f"**Diagnóstico:** {h[12]}")
-                    st.write(f"**Tratamiento:** {h[13]}")
-                    st.write(f"**Exámenes:** {h[14]}")
-        else:
-            st.info("No hay registros previos para este paciente.")
-    else:
-        st.warning("No hay pacientes registrados.")
-
-# --- MÓDULO 6: RESPALDO Y DATOS ---
-elif choice == "Respaldo y Datos":
-    st.subheader("📥 Respaldo y Reportes en Excel - Medisuport")
-    st.write("Genera y descarga un archivo de Excel (`.xlsx`) con toda la información general de la clínica desde la nube.")
-
-    if st.button("Generar Reporte Excel Completo"):
-        df_pacientes = pd.read_sql_query("SELECT * FROM pacientes", conn)
-        df_citas = pd.read_sql_query("SELECT * FROM citas", conn)
-        df_historial = pd.read_sql_query("SELECT * FROM historial", conn)
-
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_pacientes.to_excel(writer, sheet_name='Pacientes', index=False)
-            df_citas.to_excel(writer, sheet_name='Citas', index=False)
-            df_historial.to_excel(writer, sheet_name='Historial', index=False)
-    
-        excel_data = output.getvalue()
-
-        st.success("¡Reporte generado con éxito!")
-        st.download_button(
-            label="📥 Descargar Reporte Completo Medisuport (.xlsx)",
-            data=excel_data,
-            file_name=f"medisuport_respaldo_completo_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    {'Inicio':dashboard,'Pacientes':patients_page,'Agenda':agenda_page,'Mis citas':lambda:agenda_page(True),'Historia clínica':history_page,
+     'Médicos y horarios':doctors_page,'Usuarios':users_page,'Reportes':reports_page,'Reportes y respaldo':lambda:reports_page(True),'Administración':admin_page}[page]()
+except Exception as exc: fail(exc)
