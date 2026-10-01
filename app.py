@@ -1,6 +1,7 @@
 """Medisuport v2 — interfaz Streamlit."""
 from datetime import date, datetime, time, timedelta
-import io, json, logging, traceback
+from pathlib import Path
+import io, json, logging, traceback, re, unicodedata
 import pandas as pd
 import streamlit as st
 from psycopg2.errors import ExclusionViolation, UniqueViolation
@@ -193,8 +194,8 @@ if user['must_change']:
     st.stop()
 
 pages={
- 'admin':['Inicio','Pacientes','Agenda','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
- 'secretaria':['Inicio','Pacientes','Agenda','Médicos y horarios','Reportes'],
+ 'admin':['Inicio','Pacientes','Convenios','Agenda','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
+ 'secretaria':['Inicio','Pacientes','Convenios','Agenda','Médicos y horarios','Reportes'],
  'medico':['Inicio','Mis citas','Historia clínica','Pacientes']
 }[ROLE]
 # Los cambios de página solicitados por una acción se aplican al comienzo del
@@ -227,7 +228,7 @@ def patient_picker(key,active=True):
     return labels[st.selectbox("Paciente",labels,key=key+"_p")]
 def fmt_dt(v): return v.astimezone(TZ).strftime('%d/%m/%Y %H:%M') if v else ''
 def appointment_table(rows):
-    return pd.DataFrame([{'Hora':fmt_dt(r['start_at']),'Paciente':proper_name(r['patient']),'Documento':r['document'],'Teléfono':r['phone'],'Médico':proper_name(r['doctor']),'Especialidad':r['specialty'],'Estado':r['status']} for r in rows])
+    return pd.DataFrame([{'Hora':fmt_dt(r['start_at']),'Paciente':proper_name(r['patient']),'Documento':r['document'],'Teléfono':r['phone'],'Convenio':r.get('agreement') or 'Particular','Médico':proper_name(r['doctor']),'Especialidad':r['specialty'],'Estado':r['status']} for r in rows])
 
 def dashboard():
     st.title("Agenda de hoy")
@@ -256,9 +257,9 @@ def patient_form(existing=None):
             email=st.text_input("Correo",value=e.get('email') or '')
             address=st.text_input("Dirección",value=e.get('address') or '')
             occupation=st.text_input("Ocupación",value=e.get('occupation') or '')
-            coverages=['Particular / Propio de la Clínica','ISSFA','IESS','MSP','Seguro Privado']
+            coverages=['Particular']+[a['name'] for a in db.agreements(UID,True)]
             coverage=st.selectbox("Cobertura",coverages,index=coverages.index(e.get('coverage')) if e.get('coverage') in coverages else 0)
-            origins=['Propio de la Clínica','Prestador Externo ISSFA']
+            origins=['Propio de la Clínica','Convenio institucional']
             origin=st.selectbox("Origen",origins,index=origins.index(e.get('origin')) if e.get('origin') in origins else 0)
         if st.form_submit_button("Guardar ficha",type="primary"):
             data={'document':document,'name':name,'sex':sex,'birth_date':birth,'phone':phone,'email':email,
@@ -293,6 +294,85 @@ def patients_page():
                 reason=st.text_input("Motivo de reactivación")
                 if st.button("Reactivar"): run(lambda:db.archive_patient(UID,p['id'],reason,True),"Paciente reactivado.")
             else: st.info("No hay pacientes archivados.")
+
+IMPORT_COLUMNS={'cedula','nombres_completos','sexo','fecha_nacimiento','telefono','correo','direccion','ocupacion','numero_afiliado'}
+def normalized_header(value):
+    text=unicodedata.normalize('NFKD',str(value or '')).encode('ascii','ignore').decode().lower().strip()
+    return re.sub(r'[^a-z0-9]+','_',text).strip('_')
+def patient_import_preview(uploaded,agreement_name):
+    frame=pd.read_excel(uploaded,sheet_name='Pacientes',dtype=str)
+    frame.columns=[normalized_header(c) for c in frame.columns]
+    missing=IMPORT_COLUMNS-set(frame.columns)
+    if missing: raise AppError('Faltan columnas en la plantilla: '+', '.join(sorted(missing))+'.')
+    frame=frame[list(IMPORT_COLUMNS)].fillna('')
+    rows=[]; seen=set()
+    sex_map={'f':'Femenino','femenino':'Femenino','mujer':'Femenino','m':'Masculino','masculino':'Masculino','hombre':'Masculino','otro':'Otro'}
+    for _,source in frame.iterrows():
+        if not any(str(x).strip() for x in source): continue
+        raw_date=str(source['fecha_nacimiento']).strip(); birth=None
+        if raw_date:
+            parsed=pd.to_datetime(raw_date,dayfirst=True,errors='coerce')
+            birth=None if pd.isna(parsed) else parsed.date()
+        document=re.sub(r'\.0$','',str(source['cedula']).strip())
+        row={'document':document,'name':source['nombres_completos'],'sex':sex_map.get(normalized_header(source['sexo']),str(source['sexo']).strip()),
+             'birth_date':birth,'phone':re.sub(r'\.0$','',str(source['telefono']).strip()),'email':source['correo'],'address':source['direccion'],
+             'occupation':source['ocupacion'],'coverage':agreement_name,'origin':'Convenio institucional','member_number':re.sub(r'\.0$','',str(source['numero_afiliado']).strip())}
+        try:
+            from core import validate_patient
+            validate_patient(row)
+            if document in seen: raise AppError('Documento repetido dentro del archivo.')
+            seen.add(document); status='Listo'
+        except Exception as exc: status=str(exc)
+        rows.append((row,status))
+    return rows
+
+def agreements_page():
+    st.title("Convenios e importación")
+    st.caption("Registre cualquier institución y cargue sus pacientes con la plantilla oficial de Excel.")
+    rows=db.agreements(UID)
+    if rows:
+        st.dataframe(pd.DataFrame([{'Convenio':proper_name(a['name']),'Código':a['code'] or '', 'Pacientes activos':a['patient_count'],
+                                   'Exige autorización':'Sí' if a['requires_authorization'] else 'No','Vigente':'Sí' if a['active'] else 'No'} for a in rows]),hide_index=True,use_container_width=True)
+    if ROLE=='admin':
+        labels={'Nuevo convenio':None}|{proper_name(a['name']):a for a in rows}; selected=labels[st.selectbox("Crear o editar",labels,key='agreement_edit')]
+        with st.form('agreement_form'):
+            a,b=st.columns(2)
+            with a:
+                name=st.text_input("Nombre del convenio *",value=selected['name'] if selected else '')
+                code=st.text_input("Código interno",value=selected['code'] or '' if selected else '')
+                tax_id=st.text_input("RUC / identificación",value=selected['tax_id'] or '' if selected else '')
+                contact=st.text_input("Persona de contacto",value=selected['contact_name'] or '' if selected else '')
+            with b:
+                phone=st.text_input("Teléfono",value=selected['phone'] or '' if selected else '')
+                email=st.text_input("Correo",value=selected['email'] or '' if selected else '')
+                requires=st.checkbox("Exige autorización para cada cita",value=selected['requires_authorization'] if selected else False)
+                active=st.checkbox("Convenio activo",value=selected['active'] if selected else True)
+            notes=st.text_area("Observaciones",value=selected['notes'] or '' if selected else '')
+            if st.form_submit_button("Guardar convenio",type='primary'):
+                data={'name':name,'code':code,'tax_id':tax_id,'contact_name':contact,'phone':phone,'email':email,'notes':notes,
+                      'requires_authorization':requires,'active':active,'start_date':selected.get('start_date') if selected else None,'end_date':selected.get('end_date') if selected else None}
+                run(lambda:db.save_agreement(UID,data,selected['id'] if selected else None,selected['version'] if selected else None),"Convenio guardado.")
+    active=[a for a in rows if a['active']]
+    st.subheader("Importar pacientes")
+    template=Path(__file__).parent/'plantilla_importacion_pacientes.xlsx'
+    if template.exists(): st.download_button("Descargar plantilla oficial",template.read_bytes(),template.name,"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if not active: st.info("Primero registre y active un convenio."); return
+    choices={proper_name(a['name']):a for a in active}; chosen=choices[st.selectbox("Convenio de destino",choices,key='agreement_import')]
+    uploaded=st.file_uploader("Archivo Excel completado",type=['xlsx'],key='patient_xlsx')
+    if uploaded:
+        try:
+            prepared=patient_import_preview(uploaded,chosen['name'])
+            preview=[{'Documento':r['document'],'Paciente':proper_name(r['name']),'Número afiliado':r['member_number'],'Estado':status} for r,status in prepared]
+            st.dataframe(pd.DataFrame(preview),hide_index=True,use_container_width=True)
+            valid=[r for r,status in prepared if status=='Listo']; errors=len(prepared)-len(valid)
+            st.caption(f"{len(valid)} fila(s) lista(s) · {errors} fila(s) con observaciones")
+            if st.button("Confirmar importación",type='primary',disabled=errors>0 or not valid):
+                result=run(lambda:db.import_patients(UID,chosen['id'],valid),rerun=False)
+                if result:
+                    st.session_state.import_result=excel({'Resultado':result}); st.success(f"Importación terminada: {len(result)} pacientes procesados.")
+            if st.session_state.get('import_result'):
+                st.download_button("Descargar resultado",st.session_state.import_result,"Resultado_importacion.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception as exc: fail(exc)
 
 def agenda_page(doctor_only=False):
     st.title("Mis citas" if doctor_only else "Agenda")
@@ -339,12 +419,17 @@ def booking_form(existing=None):
     slots=db.available_slots(UID,d['id'],p['id'],day,duration,existing['id'] if existing else None)
     if not slots: st.warning("No hay turnos libres para esa fecha y duración."); return
     labels={x.strftime('%H:%M'):x for x in slots}; selected=st.selectbox("Hora disponible",labels,key='bt'+str(existing and existing['id']))
-    issfa=p['coverage']=='ISSFA' or 'ISSFA' in (p['origin'] or '')
-    authorization=st.text_input("Número de autorización ISSFA",value=(existing.get('authorization_code') or '') if existing else '',disabled=not issfa,key='ba'+str(existing and existing['id']))
-    expires=st.date_input("Vencimiento autorización",value=existing.get('expires_on') if existing and existing.get('expires_on') else day,disabled=not issfa,format='DD/MM/YYYY',key='be'+str(existing and existing['id']))
+    linked=db.patient_agreements(UID,p['id'])
+    options={'Particular':None}|{a['name']:a for a in linked}
+    current=next((name for name,a in options.items() if a and existing and a['id']==existing.get('agreement_id')),'Particular')
+    agreement_name=st.selectbox("Facturación / convenio",list(options),index=list(options).index(current),key='bc'+str(existing and existing['id']))
+    agreement=options[agreement_name]; needs_auth=bool(agreement and agreement['requires_authorization'])
+    authorization=st.text_input("Número de autorización",value=(existing.get('authorization_code') or '') if existing else '',disabled=not agreement,key='ba'+str(existing and existing['id']))
+    expires=st.date_input("Vencimiento autorización",value=existing.get('expires_on') if existing and existing.get('expires_on') else day,disabled=not agreement,format='DD/MM/YYYY',key='be'+str(existing and existing['id']))
+    if needs_auth: st.caption("Este convenio exige autorización vigente para agendar.")
     notes=st.text_area("Observaciones",value=(existing.get('notes') or '') if existing else '',key='bn'+str(existing and existing['id']))
     if st.button("Guardar reagendamiento" if existing else "Agendar",type="primary",key='save_book'+str(existing and existing['id'])):
-        run(lambda:db.book(UID,p['id'],d['id'],specialty,labels[selected],duration,authorization,expires if issfa else None,notes,existing['id'] if existing else None,existing['version'] if existing else None),"Cita guardada.")
+        run(lambda:db.book(UID,p['id'],d['id'],specialty,labels[selected],duration,agreement['id'] if agreement else None,authorization,expires if agreement else None,notes,existing['id'] if existing else None,existing['version'] if existing else None),"Cita guardada.")
 
 CLINICAL_KEYS=['antecedentes_pers','antecedentes_fam','habitos','motivo','enfermedad_actual','peso','talla','pa','fc','diagnostico','tratamiento','examenes']
 def clinical_form(enc):
@@ -460,6 +545,7 @@ def reports_page(full=False):
         'Paciente':proper_name(r['patient']),
         'Documento':r['document'],
         'Teléfono':r['phone'] or '',
+        'Convenio':r.get('agreement') or 'Particular',
         'Médico':proper_name(r['doctor']),
         'Especialidad':str(r['specialty'] or '').capitalize(),
         'Estado':r['status'],
@@ -483,7 +569,7 @@ def reports_page(full=False):
             if prepared: st.session_state.backup_zip=prepared
         if st.session_state.get('backup_zip'):
             st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
-        st.caption("El respaldo recuperable contiene todas las tablas de la versión 2 y una huella de integridad.")
+        st.caption("El respaldo recuperable contiene todas las tablas de la versión 3 y una huella de integridad.")
 
 def admin_page():
     st.title("Administración")
@@ -504,6 +590,6 @@ def admin_page():
         logs=db.audit_rows(UID); st.dataframe(pd.DataFrame(logs),hide_index=True,use_container_width=True)
 
 try:
-    {'Inicio':dashboard,'Pacientes':patients_page,'Agenda':agenda_page,'Mis citas':lambda:agenda_page(True),'Historia clínica':history_page,
+    {'Inicio':dashboard,'Pacientes':patients_page,'Convenios':agreements_page,'Agenda':agenda_page,'Mis citas':lambda:agenda_page(True),'Historia clínica':history_page,
      'Médicos y horarios':doctors_page,'Usuarios':users_page,'Reportes':reports_page,'Reportes y respaldo':lambda:reports_page(True),'Administración':admin_page}[page]()
 except Exception as exc: fail(exc)

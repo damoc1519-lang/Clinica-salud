@@ -29,7 +29,8 @@ Sistema clínico en Streamlit con PostgreSQL/Supabase. Esta versión usa el esqu
 
 - `app.py`: interfaz completa.
 - `core.py`: seguridad, permisos, reglas clínicas y operaciones de datos.
-- `schema.sql`: esquema v2, restricciones y protección contra citas cruzadas.
+- `schema.sql`: esquema v3, restricciones y protección contra citas cruzadas.
+- `plantilla_importacion_pacientes.xlsx`: plantilla oficial para cargar pacientes de convenios.
 - `legacy.py`: importación repetible de la versión anterior.
 - `exports.py`: expedientes Word y reportes Excel.
 - `manage.py`: creación inicial alternativa y restauración en esquema vacío.
@@ -40,6 +41,10 @@ Sistema clínico en Streamlit con PostgreSQL/Supabase. Esta versión usa el esqu
   obligatorio de claves temporales.
 - Permisos para administración, secretaría y médicos.
 - Pacientes editables y archivables; no se eliminan expedientes desde la app.
+- Convenios configurables para cualquier institución, afiliaciones múltiples e
+  importación de pacientes mediante Excel con validación previa.
+- La cita conserva el convenio utilizado y permite exigir autorización según la
+  configuración de cada institución.
 - Agenda por turnos, duración, disponibilidad, ausencias y control de cruces de
   médico y paciente incluso si dos recepcionistas guardan al mismo tiempo.
 - Estados de cita y apertura de consulta desde una cita marcada como “Llegó”.

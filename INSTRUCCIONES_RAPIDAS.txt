@@ -9,6 +9,8 @@ MEDISUPORT V2 — PASOS RÁPIDOS
 5. Administración > Actualización de datos anteriores > Importar.
 6. Descargue el Excel de pendientes, si aparece alguno.
 7. Configure horarios y luego pruebe una cita de inicio a fin.
+8. En Convenios, registre la institución, descargue la plantilla Excel y cargue
+   la lista de pacientes sin cambiar los encabezados.
 
 Las tablas anteriores se conservan. La versión nueva trabaja dentro del esquema
 medisuport de Supabase.

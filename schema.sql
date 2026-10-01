@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT INTO settings VALUES ('schema_version','2'),('consultation_rule','specialty')
  ON CONFLICT DO NOTHING;
+UPDATE settings SET value='3' WHERE key='schema_version';
 CREATE TABLE IF NOT EXISTS doctors (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  specialties TEXT[] NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -38,6 +39,23 @@ CREATE TABLE IF NOT EXISTS patients (
  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS patient_name_idx ON patients(lower(name));
+CREATE TABLE IF NOT EXISTS agreements (
+ id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, code TEXT,
+ tax_id TEXT, contact_name TEXT, phone TEXT, email TEXT,
+ start_date DATE, end_date DATE, notes TEXT,
+ requires_authorization BOOLEAN NOT NULL DEFAULT FALSE,
+ active BOOLEAN NOT NULL DEFAULT TRUE, version INT NOT NULL DEFAULT 1,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ CHECK(end_date IS NULL OR start_date IS NULL OR end_date>=start_date)
+);
+CREATE TABLE IF NOT EXISTS patient_agreements (
+ patient_id BIGINT NOT NULL REFERENCES patients(id),
+ agreement_id BIGINT NOT NULL REFERENCES agreements(id),
+ member_number TEXT, active BOOLEAN NOT NULL DEFAULT TRUE,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ PRIMARY KEY(patient_id,agreement_id)
+);
 CREATE TABLE IF NOT EXISTS availability (
  id BIGSERIAL PRIMARY KEY, doctor_id BIGINT NOT NULL REFERENCES doctors(id),
  weekday INT NOT NULL CHECK(weekday BETWEEN 0 AND 6),
@@ -64,7 +82,10 @@ CREATE TABLE IF NOT EXISTS appointments (
  (patient_id WITH =, tstzrange(start_at,end_at,'[)') WITH &&)
  WHERE(status NOT IN ('Cancelada','No asistió'))
 );
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS agreement_id BIGINT REFERENCES agreements(id);
+ALTER TABLE agreements ADD COLUMN IF NOT EXISTS requires_authorization BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS appointment_date_idx ON appointments(start_at);
+CREATE INDEX IF NOT EXISTS patient_agreement_idx ON patient_agreements(agreement_id,patient_id);
 CREATE TABLE IF NOT EXISTS encounters (
  id BIGSERIAL PRIMARY KEY, patient_id BIGINT NOT NULL REFERENCES patients(id),
  doctor_id BIGINT REFERENCES doctors(id), appointment_id BIGINT UNIQUE REFERENCES appointments(id),
