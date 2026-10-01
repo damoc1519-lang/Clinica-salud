@@ -92,6 +92,10 @@ pages={
  'secretaria':['Inicio','Pacientes','Agenda','Médicos y horarios','Reportes'],
  'medico':['Inicio','Mis citas','Historia clínica','Pacientes']
 }[ROLE]
+# Los cambios de página solicitados por una acción se aplican al comienzo del
+# siguiente ciclo, antes de crear el widget de navegación.
+if 'next_page' in st.session_state:
+    st.session_state.page=st.session_state.pop('next_page')
 st.sidebar.title("Medisuport 🏥")
 st.sidebar.write(f"**{user['name']}**")
 st.sidebar.caption({'admin':'Administrador','secretaria':'Secretaría','medico':'Médico'}[ROLE])
@@ -197,7 +201,10 @@ def agenda_page(doctor_only=False):
             labels={f"{fmt_dt(r['start_at'])} · {r['patient']} · {r['status']}":r for r in actionable}; ap=labels[st.selectbox("Abrir consulta",labels)]
             if st.button("Continuar atención",type="primary"):
                 eid=run(lambda:db.start_encounter(UID,ap['id']),rerun=False)
-                if eid: st.session_state.encounter_id=eid; st.session_state.page='Historia clínica'; st.rerun()
+                if eid:
+                    st.session_state.encounter_id=eid
+                    st.session_state.next_page='Historia clínica'
+                    st.rerun()
         return
     if ROLE not in ('admin','secretaria'): return
     t1,t2=st.tabs(['Nueva cita','Gestionar cita'])
