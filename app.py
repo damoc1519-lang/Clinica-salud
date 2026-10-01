@@ -214,7 +214,7 @@ if user['must_change']:
 pages={
  'admin':['Inicio','Pacientes','Convenios','Agenda','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
  'secretaria':['Inicio','Pacientes','Convenios','Agenda','Médicos y horarios','Reportes'],
- 'medico':['Inicio','Mis citas','Historia clínica','Certificados médicos','Pacientes']
+ 'medico':['Inicio','Mis citas','Historia clínica','Certificados médicos','Mi información profesional','Pacientes']
 }[ROLE]
 # Los cambios de página solicitados por una acción se aplican al comienzo del
 # siguiente ciclo, antes de crear el widget de navegación.
@@ -243,6 +243,17 @@ if ROLE=='medico':
             registration=st.text_input("Número de registro profesional",value=(profile or {}).get('registration') or '')
             if st.form_submit_button("Guardar mis datos"):
                 run(lambda:db.update_my_professional(UID,professional_id,registration),"Información profesional actualizada.")
+
+def professional_profile_page():
+    st.title("Mi información profesional")
+    st.caption("Estos datos aparecerán en certificados médicos, historias clínicas y documentos descargables.")
+    profile=db.my_professional(UID)
+    st.info(f"Profesional: {proper_name(profile['name'])} · Especialidades: {', '.join(profile['specialties'])}")
+    with st.form("professional_profile_main"):
+        professional_id=st.text_input("Documento de identificación *",value=profile.get('professional_id') or '',placeholder="Ej.: 1712345678")
+        registration=st.text_input("Número de registro profesional *",value=profile.get('registration') or '',placeholder="Ej.: MSP-12345")
+        if st.form_submit_button("Guardar información profesional",type="primary"):
+            run(lambda:db.update_my_professional(UID,professional_id,registration),"Información profesional guardada correctamente.")
 
 def doctors(active=True): return db.doctors(UID,all_rows=not active)
 def doctor_map(active=True): return {proper_name(d['name']):d for d in doctors(active)}
@@ -319,6 +330,11 @@ def patients_page():
                 with st.expander("Archivar paciente"):
                     reason=st.text_area("Motivo",key='archive_reason')
                     if st.button("Archivar",type="primary"): run(lambda:db.archive_patient(UID,p['id'],reason),"Paciente archivado.")
+                if ROLE=='admin':
+                    with st.expander("Eliminar paciente definitivamente"):
+                        st.error("Se eliminarán también sus citas, historias clínicas y certificados.")
+                        if st.button("Eliminar paciente",key=f"delete_active_patient_{p['id']}"):
+                            run(lambda:db.delete_patient(UID,p['id']),"Paciente eliminado definitivamente.")
             else:
                 st.write({k:p.get(k) for k in ['document','name','sex','birth_date','phone','email','address','occupation','coverage','origin']})
     if tab2:
@@ -334,12 +350,8 @@ def patients_page():
                 if st.button("Reactivar"): run(lambda:db.archive_patient(UID,p['id'],reason,True),"Paciente reactivado.")
                 if ROLE=='admin':
                     with st.expander("Eliminar paciente definitivamente"):
-                        st.error("Esta acción no se puede deshacer. Solo estará permitida si el paciente no tiene citas ni historias clínicas.")
-                        confirm_delete=st.checkbox(
-                            f"Confirmo que deseo eliminar a {proper_name(p['name'])}",
-                            key=f"confirm_delete_patient_{p['id']}"
-                        )
-                        if st.button("Eliminar definitivamente",disabled=not confirm_delete,key=f"delete_patient_{p['id']}"):
+                        st.error("Se eliminarán también sus citas, historias clínicas y certificados.")
+                        if st.button("Eliminar definitivamente",key=f"delete_patient_{p['id']}"):
                             run(lambda:db.delete_patient(UID,p['id']),"Paciente eliminado definitivamente.")
             else: st.info("No hay pacientes archivados.")
 
@@ -649,6 +661,7 @@ def certificates_page():
     profile=next((d for d in db.doctors(UID,all_rows=True) if d['id']==DOCTOR),None)
     if not profile or not profile.get('professional_id') or not profile.get('registration'):
         st.warning('Antes de emitir un certificado, complete su documento y número de registro en “Mi información profesional”.')
+    needs_rest=st.checkbox("Requiere reposo médico",key='certificate_needs_rest')
     with st.form('medical_certificate_form'):
         a,b=st.columns(2)
         institution=a.text_input("Establecimiento de salud *",value="Medisuport")
@@ -657,7 +670,6 @@ def certificates_page():
         specialty=st.selectbox("Especialidad",specialties)
         diagnosis=st.text_area("Diagnóstico o condición médica *")
         cie10=st.text_input("Código CIE-10 (opcional)",max_chars=20)
-        needs_rest=st.checkbox("Requiere reposo médico")
         c1,c2=st.columns(2)
         rest_from=c1.date_input("Reposo desde",value=now().date(),disabled=not needs_rest,format='DD/MM/YYYY')
         rest_to=c2.date_input("Reposo hasta",value=now().date(),disabled=not needs_rest,format='DD/MM/YYYY')
@@ -741,5 +753,5 @@ def admin_page():
 
 try:
     {'Inicio':dashboard,'Pacientes':patients_page,'Convenios':agreements_page,'Agenda':agenda_page,'Mis citas':lambda:agenda_page(True),'Historia clínica':history_page,
-     'Certificados médicos':certificates_page,'Médicos y horarios':doctors_page,'Usuarios':users_page,'Reportes':reports_page,'Reportes y respaldo':lambda:reports_page(True),'Administración':admin_page}[page]()
+     'Certificados médicos':certificates_page,'Mi información profesional':professional_profile_page,'Médicos y horarios':doctors_page,'Usuarios':users_page,'Reportes':reports_page,'Reportes y respaldo':lambda:reports_page(True),'Administración':admin_page}[page]()
 except Exception as exc: fail(exc)

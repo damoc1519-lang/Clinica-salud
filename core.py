@@ -268,6 +268,11 @@ class Database:
             if not clean(professional_id) or not clean(registration): raise AppError('Complete documento de identificación y registro profesional.')
             c.execute('UPDATE doctors SET professional_id=%s,registration=%s,version=version+1 WHERE id=%s',(clean(professional_id),clean(registration),a['doctor_id']))
             self.audit(c,a,'actualizar_perfil_profesional','doctors',a['doctor_id'])
+    def my_professional(self,uid):
+        with self.tx() as c:
+            a=self.actor(c,uid,['medico'])
+            c.execute('SELECT * FROM doctors WHERE id=%s',(a['doctor_id'],))
+            return c.fetchone()
     def patient_scope(self,c,a,pid,clinical=False):
         if clinical and a['role']=='secretaria': raise AppError('El historial clínico requiere un perfil médico o administrador.')
         if a['role']=='medico':
@@ -366,21 +371,20 @@ class Database:
             c.execute('UPDATE patients SET active=%s,archive_reason=%s,version=version+1,updated_at=now() WHERE id=%s',(active,reason,pid))
             self.audit(c,a,'reactivar' if active else 'archivar','patients',pid,{'motivo':reason})
     def delete_patient(self,uid,pid):
-        """Elimina un paciente archivado sin destruir información clínica."""
+        """Eliminación total solicitada por un administrador."""
         with self.tx() as c:
             a=self.actor(c,uid,['admin'])
             c.execute('SELECT id,name,document,active FROM patients WHERE id=%s FOR UPDATE',(pid,)); patient=c.fetchone()
             if not patient: raise AppError('El paciente ya no existe.')
-            if patient['active']: raise AppError('Primero debe archivar al paciente antes de eliminarlo.')
-            c.execute('''SELECT
-                         EXISTS(SELECT 1 FROM appointments WHERE patient_id=%s) AS has_appointments,
-                         EXISTS(SELECT 1 FROM encounters WHERE patient_id=%s) AS has_histories''',(pid,pid))
-            related=c.fetchone()
-            if related['has_appointments'] or related['has_histories']:
-                raise AppError('No se puede eliminar porque posee citas o historias clínicas. Debe conservarse archivado para proteger el expediente médico.')
+            # Se eliminan primero las tablas dependientes para respetar las
+            # claves foráneas de PostgreSQL.
+            c.execute('DELETE FROM amendments WHERE encounter_id IN (SELECT id FROM encounters WHERE patient_id=%s)',(pid,))
+            c.execute('DELETE FROM encounters WHERE patient_id=%s',(pid,))
+            c.execute('DELETE FROM certificates WHERE patient_id=%s',(pid,))
+            c.execute('DELETE FROM appointments WHERE patient_id=%s',(pid,))
             c.execute('DELETE FROM patient_agreements WHERE patient_id=%s',(pid,))
             c.execute('DELETE FROM patients WHERE id=%s',(pid,))
-            self.audit(c,a,'eliminar_paciente','patients',pid,{'documento':patient['document'],'nombre':patient['name']})
+            self.audit(c,a,'eliminar_paciente_total','patients',pid,{'documento':patient['document'],'nombre':patient['name']})
             return 'Paciente eliminado definitivamente.'
     def schedules(self,uid,did):
         with self.tx() as c:
