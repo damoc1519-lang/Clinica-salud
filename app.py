@@ -13,8 +13,102 @@ st.set_page_config(page_title="Medisuport", page_icon="🏥", layout="wide")
 logging.basicConfig(level=logging.INFO)
 st.markdown("""
 <style>
-.block-container{padding-top:1.2rem;max-width:1500px}.stMetric{border:1px solid #e6e9ef;border-radius:12px;padding:12px}
-[data-testid="stSidebar"]{background:#f5f8fb}.small-note{color:#586174;font-size:.88rem}
+:root{
+  --med-primary:#0f4c5c;
+  --med-primary-2:#147d92;
+  --med-accent:#22a699;
+  --med-bg:#f3f7fa;
+  --med-surface:#ffffff;
+  --med-text:#17313a;
+  --med-muted:#627680;
+  --med-border:#dce7ec;
+}
+.stApp{
+  background:
+    radial-gradient(circle at 92% 4%,rgba(34,166,153,.10),transparent 24rem),
+    linear-gradient(180deg,#f8fbfc 0%,var(--med-bg) 100%);
+  color:var(--med-text);
+}
+.block-container{padding-top:1.65rem;padding-bottom:3rem;max-width:1480px}
+h1,h2,h3{color:var(--med-primary);letter-spacing:-.025em}
+h1{font-weight:800!important;margin-bottom:.3rem!important}
+h2,h3{font-weight:750!important}
+p,.stCaption{color:var(--med-muted)}
+[data-testid="stSidebar"]{
+  background:linear-gradient(180deg,#0b3c49 0%,#0f5968 100%);
+  border-right:1px solid rgba(255,255,255,.10);
+}
+[data-testid="stSidebar"] *{color:#f4fbfc!important}
+[data-testid="stSidebar"] [data-baseweb="radio"] label{
+  border-radius:10px;padding:.38rem .55rem;margin:.08rem 0;
+}
+[data-testid="stSidebar"] [data-baseweb="radio"] label:hover{background:rgba(255,255,255,.10)}
+[data-testid="stSidebar"] hr{border-color:rgba(255,255,255,.18)}
+[data-testid="stSidebar"] button{
+  background:rgba(255,255,255,.10)!important;
+  border-color:rgba(255,255,255,.28)!important;
+}
+[data-testid="stForm"],div[data-testid="stExpander"]{
+  background:rgba(255,255,255,.94);
+  border:1px solid var(--med-border)!important;
+  border-radius:16px!important;
+  box-shadow:0 8px 28px rgba(15,76,92,.07);
+}
+[data-testid="stForm"]{padding:1.2rem 1.25rem .55rem}
+[data-testid="stMetric"]{
+  background:linear-gradient(145deg,#ffffff,#f4fbfb);
+  border:1px solid var(--med-border);
+  border-left:5px solid var(--med-accent);
+  border-radius:15px;
+  padding:14px 16px;
+  box-shadow:0 7px 22px rgba(15,76,92,.07);
+}
+[data-testid="stMetricLabel"]{color:var(--med-muted)}
+[data-testid="stMetricValue"]{color:var(--med-primary);font-weight:800}
+.stButton>button,.stDownloadButton>button,[data-testid="stFormSubmitButton"]>button{
+  border-radius:10px!important;
+  min-height:2.55rem;
+  font-weight:700!important;
+  border:1px solid #bad1d8!important;
+  transition:transform .12s ease,box-shadow .12s ease,background .12s ease;
+}
+.stButton>button:hover,.stDownloadButton>button:hover,[data-testid="stFormSubmitButton"]>button:hover{
+  border-color:var(--med-primary-2)!important;
+  color:var(--med-primary)!important;
+  transform:translateY(-1px);
+  box-shadow:0 6px 16px rgba(15,76,92,.13);
+}
+button[kind="primary"]{
+  background:linear-gradient(135deg,var(--med-primary),var(--med-primary-2))!important;
+  color:white!important;border:none!important;
+  box-shadow:0 6px 16px rgba(15,76,92,.20);
+}
+button[kind="primary"]:hover{color:white!important;box-shadow:0 8px 20px rgba(15,76,92,.28)}
+.stTabs [data-baseweb="tab-list"]{
+  gap:.35rem;background:#e9f1f4;padding:.35rem;border-radius:12px;
+}
+.stTabs [data-baseweb="tab"]{
+  height:2.7rem;border-radius:9px;padding:0 1rem;color:#45616b;font-weight:650;
+}
+.stTabs [aria-selected="true"]{
+  background:white!important;color:var(--med-primary)!important;
+  box-shadow:0 3px 10px rgba(15,76,92,.10);
+}
+.stTabs [data-baseweb="tab-highlight"]{display:none}
+div[data-baseweb="input"]>div,div[data-baseweb="select"]>div,textarea{
+  border-radius:10px!important;border-color:#cbdde3!important;background:#fbfdfe!important;
+}
+div[data-baseweb="input"]>div:focus-within,div[data-baseweb="select"]>div:focus-within,textarea:focus{
+  border-color:var(--med-primary-2)!important;
+  box-shadow:0 0 0 3px rgba(20,125,146,.12)!important;
+}
+[data-testid="stDataFrame"]{
+  border:1px solid var(--med-border);border-radius:13px;overflow:hidden;
+  box-shadow:0 5px 18px rgba(15,76,92,.05);
+}
+[data-testid="stAlert"]{border-radius:12px;border-width:1px}
+.small-note{color:var(--med-muted);font-size:.88rem}
+@media (max-width:768px){.block-container{padding-top:1rem}.stTabs [data-baseweb="tab"]{padding:0 .6rem}}
 </style>""", unsafe_allow_html=True)
 
 @st.cache_resource(show_spinner="Conectando con Supabase…")
@@ -97,6 +191,7 @@ pages={
 if 'next_page' in st.session_state:
     st.session_state.page=st.session_state.pop('next_page')
 st.sidebar.title("Medisuport 🏥")
+st.sidebar.caption("Gestión clínica segura")
 st.sidebar.write(f"**{user['name']}**")
 st.sidebar.caption({'admin':'Administrador','secretaria':'Secretaría','medico':'Médico'}[ROLE])
 page=st.sidebar.radio("Menú",pages,key="page")
