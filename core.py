@@ -80,14 +80,22 @@ def validate_patient(data):
     return p
 
 def clinical_data(data,final=False):
-    result={k:clean(data.get(k)) for k in ['antecedentes_pers','antecedentes_fam','habitos','motivo','enfermedad_actual','pa','diagnostico','tratamiento','examenes']}
-    for key,maximum in [('peso',500),('talla',280),('fc',350)]:
+    text_keys=['motivo','antecedentes_pers','antecedentes_fam','personal_details','family_details','habitos','alergias','enfermedad_actual','pa','systems_details','physical_details',
+               'diagnostico','tratamiento','examenes','interconsult_specialty','interconsult_reason','clinical_summary','exam_results','therapeutic_plan',
+               'referral_type','referral_destination','referral_service','referral_specialty','referral_summary','referral_findings','lab_treatment',
+               'other_lab_tests','imaging_description','imaging_reason','prescription','prescription_warnings']
+    list_keys=['personal_conditions','family_conditions','systems_review','physical_regional','physical_systemic','diagnoses','referral_reasons','lab_tests','imaging_types']
+    result={k:clean(data.get(k)) for k in text_keys}
+    for key in list_keys: result[key]=data.get(key) if isinstance(data.get(key),list) else []
+    for key,maximum in [('temperatura',50),('fc',350),('fr',100),('peso',500),('talla',280),('perimetro_abdominal',300),('hemoglobina_capilar',30),('glucosa_capilar',1000),('spo2',100)]:
         raw=data.get(key)
         if raw in ('',None,0,0.0): result[key]=None; continue
         try: value=float(raw)
         except (ValueError,TypeError): raise AppError(f'Revise el valor de {key}.')
         if not 0<value<=maximum: raise AppError(f'Revise el valor de {key}.')
         result[key]=value
+    result['fum']=parse_date(data.get('fum'))
+    result['contaminado']=bool(data.get('contaminado')); result['sedacion']=bool(data.get('sedacion'))
     result['imc']=round(result['peso']/(result['talla']/100)**2,2) if result['peso'] and result['talla'] else None
     if final and (not result['motivo'] or not result['diagnostico']): raise AppError('Complete motivo y diagnóstico antes de finalizar.')
     return result
@@ -224,11 +232,11 @@ class Database:
                 if not data['active']:
                     c.execute("SELECT count(*) AS n FROM appointments WHERE doctor_id=%s AND start_at>=now() AND status NOT IN ('Cancelada','No asistió','Atendida')",(target,))
                     if c.fetchone()['n']: raise AppError('Reagende o cancele las citas futuras antes de desactivar al médico.')
-                c.execute('UPDATE doctors SET name=%s,specialties=%s,slot_minutes=%s,active=%s,version=version+1 WHERE id=%s AND version=%s RETURNING id',
-                          (name,specialties,data['slot_minutes'],data['active'],target,version))
+                c.execute('UPDATE doctors SET name=%s,specialties=%s,slot_minutes=%s,professional_id=%s,registration=%s,active=%s,version=version+1 WHERE id=%s AND version=%s RETURNING id',
+                          (name,specialties,data['slot_minutes'],clean(data.get('professional_id')),clean(data.get('registration')),data['active'],target,version))
                 if not c.fetchone(): raise AppError('El médico cambió en otra sesión. Actualice la pantalla.')
             else:
-                c.execute('INSERT INTO doctors(name,specialties,slot_minutes) VALUES(%s,%s,%s) RETURNING id',(name,specialties,data['slot_minutes'])); target=c.fetchone()['id']
+                c.execute('INSERT INTO doctors(name,specialties,slot_minutes,professional_id,registration) VALUES(%s,%s,%s,%s,%s) RETURNING id',(name,specialties,data['slot_minutes'],clean(data.get('professional_id')),clean(data.get('registration')))); target=c.fetchone()['id']
             self.audit(c,a,'guardar_medico','doctors',target)
     def patient_scope(self,c,a,pid,clinical=False):
         if clinical and a['role']=='secretaria': raise AppError('El historial clínico requiere un perfil médico o administrador.')
@@ -442,7 +450,7 @@ class Database:
     def histories(self,uid,pid):
         with self.tx() as c:
             a=self.actor(c,uid,['admin','medico']); self.patient_scope(c,a,pid,True)
-            c.execute("SELECT e.*,COALESCE(d.name,e.legacy_author,'Sin asignar') AS doctor FROM encounters e LEFT JOIN doctors d ON d.id=e.doctor_id WHERE e.patient_id=%s AND (e.status='Finalizada' OR e.author_id=%s) ORDER BY e.occurred_at DESC",(pid,uid)); rows=c.fetchall()
+            c.execute("SELECT e.*,COALESCE(d.name,e.legacy_author,'Sin asignar') AS doctor,d.professional_id,d.registration FROM encounters e LEFT JOIN doctors d ON d.id=e.doctor_id WHERE e.patient_id=%s AND (e.status='Finalizada' OR e.author_id=%s) ORDER BY e.occurred_at DESC",(pid,uid)); rows=c.fetchall()
             for row in rows:
                 c.execute('SELECT m.*,u.name AS author FROM amendments m JOIN users u ON u.id=m.author_id WHERE encounter_id=%s ORDER BY m.created_at',(row['id'],)); row['amendments']=c.fetchall()
             self.audit(c,a,'consultar_historial','patients',pid); return rows
@@ -474,7 +482,7 @@ class Database:
             payload={}
             for table in BACKUP_TABLES:
                 c.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(table))); payload[table]=[dict(r) for r in c.fetchall()]
-        raw=json.dumps({'version':3,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
+        raw=json.dumps({'version':4,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
         out=io.BytesIO()
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
             z.writestr('datos.json',raw); z.writestr('sha256.txt',hashlib.sha256(raw).hexdigest())
@@ -485,7 +493,7 @@ class Database:
             raw=z.read('datos.json')
             if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(),z.read('sha256.txt').decode().strip()): raise AppError('El respaldo está dañado.')
         data=json.loads(raw)
-        if data.get('version')!=3 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
+        if data.get('version')!=4 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
         with self.tx() as c:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
             for table in BACKUP_TABLES:

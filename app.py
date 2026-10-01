@@ -7,7 +7,7 @@ import streamlit as st
 from psycopg2.errors import ExclusionViolation, UniqueViolation
 
 from core import Database, AppError, TZ, WEEKDAYS, STATUSES, now, local_datetime, proper_name
-from exports import word_history, excel
+from exports import word_history, clinical_excel, clinical_pdf, excel
 from legacy import preview as legacy_preview, import_legacy, issues as legacy_issues
 
 st.set_page_config(page_title="Medisuport", page_icon="🏥", layout="wide")
@@ -431,33 +431,60 @@ def booking_form(existing=None):
     if st.button("Guardar reagendamiento" if existing else "Agendar",type="primary",key='save_book'+str(existing and existing['id'])):
         run(lambda:db.book(UID,p['id'],d['id'],specialty,labels[selected],duration,agreement['id'] if agreement else None,authorization,expires if agreement else None,notes,existing['id'] if existing else None,existing['version'] if existing else None),"Cita guardada.")
 
-CLINICAL_KEYS=['antecedentes_pers','antecedentes_fam','habitos','motivo','enfermedad_actual','peso','talla','pa','fc','diagnostico','tratamiento','examenes']
+CONDITIONS=['Cardiopatía','Hipertensión','Enfermedad cerebrovascular','Endócrino-metabólica','Cáncer','Tuberculosis','Enfermedad mental','Enfermedad infecciosa','Malformación','Otra']
+SYSTEMS=['Piel y anexos','Órganos de los sentidos','Respiratorio','Cardiovascular','Digestivo','Genitourinario','Músculo-esquelético','Endócrino','Hemolinfático','Nervioso']
+REGIONAL=['Piel y faneras','Cabeza','Ojos','Oídos','Nariz','Boca','Orofaringe','Cuello','Axilas y mamas','Tórax','Abdomen','Columna vertebral','Ingle y periné','Miembros superiores','Miembros inferiores']
+SYSTEMIC=['Órganos de los sentidos','Respiratorio','Cardiovascular','Digestivo','Genital','Urinario','Músculo-esquelético','Endócrino','Hemolinfático','Neurológico']
+LAB_TESTS=['Biometría hemática','Hematocrito','Hemoglobina','Plaquetas','Reticulocitos','VSG','Hierro sérico','Ferritina','TP','TTP','INR','Fibrinógeno',
+ 'Glucosa basal','Glucosa posprandial','Glucosa al azar','Urea','Creatinina','Ácido úrico','Fosfatasa alcalina','AST/TGO','ALT/TGP','GGT','Bilirrubina total',
+ 'Colesterol total','HDL','LDL','VLDL','Triglicéridos','Proteínas totales','Albúmina','HbA1c','PCR cuantitativo','Amilasa','Lipasa',
+ 'EMO','Albuminuria','Coprológico/coproparasitario','Sangre oculta','Helicobacter pylori','TSH','T3','T4','FT3','FT4','Insulina','PTH','FSH','LH',
+ '25-hidroxivitamina D','Cortisol','Testosterona total','Testosterona libre','Prolactina','Electrolitos','Gasometría arterial','Gasometría venosa',
+ 'VIH 1+2','Hepatitis A','Hepatitis B','Hepatitis C','VDRL','ANA','ANCA','Anti-DNA','Factor reumatoideo','Troponina I','Troponina T','CK-MB',
+ 'Grupo y factor','Coombs directo','Coombs indirecto','Cultivo y antibiograma','Estudio micológico','Marcadores tumorales']
 def clinical_form(enc):
     data=enc['data'] or {}
     with st.form('clinical_form'):
         st.subheader(f"Consulta {enc['consultation_type']}")
-        a,b=st.columns(2)
-        with a:
-            antecedentes_pers=st.text_area("Antecedentes personales",value=data.get('antecedentes_pers',''))
-            antecedentes_fam=st.text_area("Antecedentes familiares",value=data.get('antecedentes_fam',''))
-        with b: habitos=st.text_area("Hábitos de vida",value=data.get('habitos',''))
-        motivo=st.text_area("Motivo de consulta *",value=data.get('motivo',''))
-        enfermedad_actual=st.text_area("Enfermedad actual",value=data.get('enfermedad_actual',''))
-        cols=st.columns(5)
-        peso=cols[0].number_input("Peso kg",0.0,500.0,float(data.get('peso') or 0),step=.1)
-        talla=cols[1].number_input("Talla cm",0.0,280.0,float(data.get('talla') or 0),step=.1)
-        pa=cols[2].text_input("PA",value=data.get('pa',''))
-        fc=cols[3].number_input("FC",0,350,int(data.get('fc') or 0))
-        imc=round(peso/(talla/100)**2,2) if peso and talla else None; cols[4].metric("IMC",imc or '—')
-        diagnostico=st.text_area("Diagnóstico *",value=data.get('diagnostico',''))
-        tratamiento=st.text_area("Tratamiento e indicaciones",value=data.get('tratamiento',''))
-        examenes=st.text_area("Exámenes complementarios",value=data.get('examenes',''))
+        t1,t2,t3,t4,t5=st.tabs(['Anamnesis','Examen físico','Diagnóstico y plan','Solicitudes','Receta'])
+        with t1:
+            motivo=st.text_area("Motivo de consulta *",value=data.get('motivo',''))
+            personal_conditions=st.multiselect("Antecedentes patológicos personales",CONDITIONS,default=data.get('personal_conditions',[]))
+            personal_details=st.text_area("Datos clínicos, quirúrgicos, obstétricos y alérgicos relevantes",value=data.get('personal_details',''))
+            family_conditions=st.multiselect("Antecedentes patológicos familiares",CONDITIONS,default=data.get('family_conditions',[]))
+            family_details=st.text_area("Descripción de antecedentes familiares",value=data.get('family_details',''))
+            a,b=st.columns(2); habitos=a.text_area("Hábitos de vida",value=data.get('habitos','')); alergias=b.text_area("Alergias",value=data.get('alergias',''))
+            enfermedad_actual=st.text_area("Enfermedad o problema actual: cronología, localización, características, intensidad, frecuencia y agravantes",value=data.get('enfermedad_actual',''))
+        with t2:
+            c=st.columns(5)
+            temperatura=c[0].number_input("Temperatura °C",0.0,50.0,float(data.get('temperatura') or 0),step=.1)
+            pa=c[1].text_input("Presión arterial mmHg",value=data.get('pa','')); fc=c[2].number_input("Pulso/min",0,350,int(data.get('fc') or 0)); fr=c[3].number_input("Respiraciones/min",0,100,int(data.get('fr') or 0)); spo2=c[4].number_input("SpO₂ %",0,100,int(data.get('spo2') or 0))
+            c=st.columns(5)
+            peso=c[0].number_input("Peso kg",0.0,500.0,float(data.get('peso') or 0),step=.1); talla=c[1].number_input("Talla cm",0.0,280.0,float(data.get('talla') or 0),step=.1)
+            imc=round(peso/(talla/100)**2,2) if peso and talla else None; c[2].metric("IMC kg/m²",imc or '—')
+            perimetro=c[3].number_input("Perímetro abdominal cm",0.0,300.0,float(data.get('perimetro_abdominal') or 0),step=.1); glucosa=c[4].number_input("Glucosa capilar mg/dL",0.0,1000.0,float(data.get('glucosa_capilar') or 0),step=.1)
+            hemoglobina=st.number_input("Hemoglobina capilar g/dL",0.0,30.0,float(data.get('hemoglobina_capilar') or 0),step=.1)
+            systems_review=st.multiselect("Revisión de órganos y sistemas con patología",SYSTEMS,default=data.get('systems_review',[])); systems_details=st.text_area("Descripción de la revisión por sistemas",value=data.get('systems_details',''))
+            physical_regional=st.multiselect("Examen físico regional con hallazgos",REGIONAL,default=data.get('physical_regional',[])); physical_systemic=st.multiselect("Examen físico sistémico con hallazgos",SYSTEMIC,default=data.get('physical_systemic',[])); physical_details=st.text_area("Descripción de hallazgos del examen físico",value=data.get('physical_details',''))
+        with t3:
+            diagnostico=st.text_area("Diagnóstico principal *",value=data.get('diagnostico',''))
+            diagnoses_text=st.text_area("Diagnósticos codificados: una línea por diagnóstico en formato CIE10 | Presuntivo/Definitivo | Descripción",value='\n'.join(data.get('diagnoses',[])))
+            tratamiento=st.text_area("Plan diagnóstico, terapéutico y educacional",value=data.get('tratamiento','')); examenes=st.text_area("Resultados de exámenes y procedimientos relevantes",value=data.get('examenes',''))
+        with t4:
+            interconsult_specialty=st.text_input("Especialidad para interconsulta",value=data.get('interconsult_specialty','')); interconsult_reason=st.text_area("Motivo de interconsulta",value=data.get('interconsult_reason','')); clinical_summary=st.text_area("Resumen del cuadro clínico",value=data.get('clinical_summary','')); exam_results=st.text_area("Hallazgos relevantes",value=data.get('exam_results','')); therapeutic_plan=st.text_area("Plan terapéutico realizado",value=data.get('therapeutic_plan',''))
+            referral_type=st.selectbox("Tipo de referencia",['','Referencia','Derivación','Contrarreferencia','Referencia inversa'],index=['','Referencia','Derivación','Contrarreferencia','Referencia inversa'].index(data.get('referral_type','')) if data.get('referral_type','') in ['','Referencia','Derivación','Contrarreferencia','Referencia inversa'] else 0)
+            referral_reasons=st.multiselect("Motivos",['Accesibilidad geográfica','Falta de espacio físico','Falta de equipamiento','Equipos en mal estado','Problemas de infraestructura','Problemas de abastecimiento','Insuficiencia de profesionales','Inadecuada capacidad resolutiva','Ausencia de prestación'],default=data.get('referral_reasons',[]))
+            referral_destination=st.text_input("Institución / establecimiento de destino",value=data.get('referral_destination','')); referral_service=st.text_input("Servicio de destino",value=data.get('referral_service','')); referral_specialty=st.text_input("Especialidad de destino",value=data.get('referral_specialty','')); referral_summary=st.text_area("Resumen para referencia",value=data.get('referral_summary','')); referral_findings=st.text_area("Hallazgos para referencia",value=data.get('referral_findings',''))
+            lab_tests=st.multiselect("Exámenes de laboratorio solicitados",LAB_TESTS,default=data.get('lab_tests',[])); other_lab_tests=st.text_area("Otros exámenes / muestra / sitio anatómico",value=data.get('other_lab_tests','')); lab_treatment=st.text_area("Tratamiento terapéutico relacionado con la solicitud",value=data.get('lab_treatment',''))
+            imaging_types=st.multiselect("Imagenología solicitada",['RX convencional','RX portátil','Tomografía','Resonancia','Ecografía','Mamografía','Procedimiento','Otro'],default=data.get('imaging_types',[])); imaging_description=st.text_area("Descripción del estudio",value=data.get('imaging_description','')); imaging_reason=st.text_area("Motivo de imagenología",value=data.get('imaging_reason','')); fum=st.date_input("FUM (si corresponde)",value=data.get('fum'),format='DD/MM/YYYY'); a,b=st.columns(2); contaminado=a.checkbox("Paciente contaminado",value=bool(data.get('contaminado'))); sedacion=b.checkbox("Requiere sedación",value=bool(data.get('sedacion')))
+        with t5:
+            prescription=st.text_area("Medicamentos: una línea por medicamento en formato Nombre/DCI | Concentración y forma | Cantidad | Dosis | Frecuencia | Duración | Horario",value=data.get('prescription',''),height=180)
+            prescription_warnings=st.text_area("Indicaciones y advertencias",value=data.get('prescription_warnings',''))
         save=st.form_submit_button("Guardar borrador")
         final=st.form_submit_button("Finalizar y cerrar consulta",type="primary")
         if save or final:
-            payload={'antecedentes_pers':antecedentes_pers,'antecedentes_fam':antecedentes_fam,'habitos':habitos,
-                     'motivo':motivo,'enfermedad_actual':enfermedad_actual,'peso':peso,'talla':talla,'pa':pa,
-                     'fc':fc,'diagnostico':diagnostico,'tratamiento':tratamiento,'examenes':examenes}
+            payload=locals().copy(); payload.update({'perimetro_abdominal':perimetro,'glucosa_capilar':glucosa,'hemoglobina_capilar':hemoglobina,
+                                                     'diagnoses':[x.strip() for x in diagnoses_text.splitlines() if x.strip()]})
             run(lambda:db.save_encounter(UID,enc['id'],payload,enc['version'],final),"Consulta finalizada." if final else "Borrador guardado.")
 
 def history_page():
@@ -470,12 +497,15 @@ def history_page():
     if not p: return
     histories=db.histories(UID,p['id'])
     if histories:
-        export_key='word_export_'+str(p['id'])
-        if st.button("Preparar expediente Word"):
-            prepared=run(lambda:(db.export_event(UID,'historia_clinica',p['id'],True),word_history(p,histories))[1],rerun=False)
+        export_key='clinical_exports_'+str(p['id'])
+        if st.button("Preparar expediente completo",type='primary'):
+            prepared=run(lambda:(db.export_event(UID,'historia_clinica',p['id'],True),{'word':word_history(p,histories),'excel':clinical_excel(p,histories),'pdf':clinical_pdf(p,histories)})[1],rerun=False)
             if prepared: st.session_state[export_key]=prepared
         if st.session_state.get(export_key):
-            st.download_button("Descargar expediente Word",st.session_state[export_key],f"Historia_{p['document']}.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            files=st.session_state[export_key]; a,b,c=st.columns(3)
+            a.download_button("Descargar Word",files['word'],f"Historia_{p['document']}.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            b.download_button("Descargar Excel",files['excel'],f"Historia_{p['document']}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            c.download_button("Descargar PDF",files['pdf'],f"Historia_{p['document']}.pdf","application/pdf")
     for h in histories:
         with st.expander(f"{fmt_dt(h['occurred_at'])} · {h['doctor']} · {h['consultation_type']} · {h['status']}"):
             st.json(h['data'],expanded=True)
@@ -492,8 +522,8 @@ def doctors_page():
     if ROLE=='admin':
         with st.expander("Registrar médico"):
             with st.form('new_doctor'):
-                name=st.text_input("Nombre"); specialties=st.text_input("Especialidades separadas por coma"); slot=st.number_input("Turno predeterminado (minutos)",5,240,30)
-                if st.form_submit_button("Registrar"): run(lambda:db.save_doctor(UID,{'name':name,'specialties':specialties.split(','),'slot_minutes':slot,'active':True}),"Médico registrado.")
+                name=st.text_input("Nombre"); specialties=st.text_input("Especialidades separadas por coma"); professional_id=st.text_input("Documento de identificación"); registration=st.text_input("Registro profesional / libro / folio"); slot=st.number_input("Turno predeterminado (minutos)",5,240,30)
+                if st.form_submit_button("Registrar"): run(lambda:db.save_doctor(UID,{'name':name,'specialties':specialties.split(','),'professional_id':professional_id,'registration':registration,'slot_minutes':slot,'active':True}),"Médico registrado.")
     if not dm: st.info("No hay médicos registrados."); return
     name=st.selectbox("Médico",list(dm)); d=dm[name]; rules,blocks=db.schedules(UID,d['id'])
     st.write(pd.DataFrame([{'ID':r['id'],'Día':WEEKDAYS[r['weekday']],'Desde':str(r['start_time'])[:5],'Hasta':str(r['end_time'])[:5]} for r in rules]))
@@ -515,8 +545,8 @@ def doctors_page():
     if ROLE=='admin':
         with st.expander("Editar médico"):
             with st.form('edit_doctor'):
-                n=st.text_input("Nombre",value=d['name']); specs=st.text_input("Especialidades",value=', '.join(d['specialties'])); slot=st.number_input("Duración predeterminada",5,240,d['slot_minutes']); active=st.checkbox("Activo",value=d['active'])
-                if st.form_submit_button("Guardar"): run(lambda:db.save_doctor(UID,{'name':n,'specialties':specs.split(','),'slot_minutes':slot,'active':active},d['id'],d['version']),"Médico actualizado.")
+                n=st.text_input("Nombre",value=d['name']); specs=st.text_input("Especialidades",value=', '.join(d['specialties'])); professional_id=st.text_input("Documento de identificación",value=d.get('professional_id') or ''); registration=st.text_input("Registro profesional / libro / folio",value=d.get('registration') or ''); slot=st.number_input("Duración predeterminada",5,240,d['slot_minutes']); active=st.checkbox("Activo",value=d['active'])
+                if st.form_submit_button("Guardar"): run(lambda:db.save_doctor(UID,{'name':n,'specialties':specs.split(','),'professional_id':professional_id,'registration':registration,'slot_minutes':slot,'active':active},d['id'],d['version']),"Médico actualizado.")
 
 def users_page():
     st.title("Usuarios")
@@ -569,7 +599,7 @@ def reports_page(full=False):
             if prepared: st.session_state.backup_zip=prepared
         if st.session_state.get('backup_zip'):
             st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
-        st.caption("El respaldo recuperable contiene todas las tablas de la versión 3 y una huella de integridad.")
+        st.caption("El respaldo recuperable contiene todas las tablas de la versión 4 y una huella de integridad.")
 
 def admin_page():
     st.title("Administración")

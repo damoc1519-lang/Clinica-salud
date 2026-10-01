@@ -11,6 +11,8 @@ MEDISUPORT V2 — PASOS RÁPIDOS
 7. Configure horarios y luego pruebe una cita de inicio a fin.
 8. En Convenios, registre la institución, descargue la plantilla Excel y cargue
    la lista de pacientes sin cambiar los encabezados.
+9. Complete el documento y registro profesional de cada médico. En Historia
+   clínica podrá descargar el expediente completo en Word, Excel y PDF.
 
 Las tablas anteriores se conservan. La versión nueva trabaja dentro del esquema
 medisuport de Supabase.

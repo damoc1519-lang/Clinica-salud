@@ -1,4 +1,4 @@
--- Versión 2: esquema separado; no modifica ni elimina tablas public anteriores.
+-- Versión 4: esquema separado; no modifica ni elimina tablas public anteriores.
 CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA extensions;
 CREATE SCHEMA IF NOT EXISTS medisuport;
@@ -9,13 +9,16 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT INTO settings VALUES ('schema_version','2'),('consultation_rule','specialty')
  ON CONFLICT DO NOTHING;
-UPDATE settings SET value='3' WHERE key='schema_version';
+UPDATE settings SET value='4' WHERE key='schema_version';
 CREATE TABLE IF NOT EXISTS doctors (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  specialties TEXT[] NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
+ professional_id TEXT, registration TEXT,
  slot_minutes INT NOT NULL DEFAULT 30 CHECK(slot_minutes BETWEEN 5 AND 240),
  version INT NOT NULL DEFAULT 1
 );
+ALTER TABLE doctors ADD COLUMN IF NOT EXISTS professional_id TEXT;
+ALTER TABLE doctors ADD COLUMN IF NOT EXISTS registration TEXT;
 CREATE TABLE IF NOT EXISTS users (
  id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL UNIQUE,
  name TEXT NOT NULL, password_hash TEXT NOT NULL,

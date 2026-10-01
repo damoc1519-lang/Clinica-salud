@@ -29,7 +29,7 @@ Sistema clínico en Streamlit con PostgreSQL/Supabase. Esta versión usa el esqu
 
 - `app.py`: interfaz completa.
 - `core.py`: seguridad, permisos, reglas clínicas y operaciones de datos.
-- `schema.sql`: esquema v3, restricciones y protección contra citas cruzadas.
+- `schema.sql`: esquema v4, restricciones y protección contra citas cruzadas.
 - `plantilla_importacion_pacientes.xlsx`: plantilla oficial para cargar pacientes de convenios.
 - `legacy.py`: importación repetible de la versión anterior.
 - `exports.py`: expedientes Word y reportes Excel.
@@ -51,6 +51,9 @@ Sistema clínico en Streamlit con PostgreSQL/Supabase. Esta versión usa el esqu
 - Borradores clínicos, IMC automático, hábitos guardados y correcciones mediante
   notas adicionales que conservan el texto original.
 - Exportación Word, Excel, respaldo recuperable y registro de actividad.
+- Historia clínica ampliada con anamnesis, signos vitales, revisión por sistemas,
+  examen físico, diagnósticos CIE10, interconsulta, referencia, laboratorio,
+  imagenología y receta; descarga completa en Word, Excel y PDF.
 
 ## Respaldo y restauración
 

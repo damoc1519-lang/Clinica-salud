@@ -1,6 +1,7 @@
 from datetime import date,time,datetime,timedelta
 import unittest
 from core import TZ,AppError,password_hash,password_ok,validate_patient,clinical_data,slots_for_day
+from exports import clinical_excel,clinical_pdf
 from legacy import parse_schedule
 
 class CoreTests(unittest.TestCase):
@@ -28,5 +29,14 @@ class CoreTests(unittest.TestCase):
  def test_legacy_schedule_parser(self):
     days,start,end=parse_schedule('Lunes, Miércoles y Viernes','08:00 - 12:00')
     assert days==[0,2,4] and start==time(8) and end==time(12)
+
+ def test_extended_clinical_record_and_exports(self):
+    data=clinical_data({'motivo':'Control','diagnostico':'Hipertensión','peso':80,'talla':160,'temperatura':36.5,
+                        'personal_conditions':['Hipertensión'],'lab_tests':['Biometría hemática'],'prescription':'Losartán | 50 mg | 30 | 1 tableta | cada día | 30 días | 08:00'},True)
+    assert data['imc']==31.25 and data['personal_conditions']==['Hipertensión']
+    patient={'name':'ana ruiz','document':'1712345678','sex':'Femenino','birth_date':date(1980,1,1),'phone':'0999999999','address':'Quito','coverage':'Particular'}
+    histories=[{'status':'Finalizada','occurred_at':datetime(2026,10,1,10,tzinfo=TZ),'doctor':'juan perez','specialty':'Medicina general','consultation_type':'C1','professional_id':'1700000000','registration':'MSP-001','data':data,'amendments':[]}]
+    assert clinical_excel(patient,histories)[:2]==b'PK'
+    assert clinical_pdf(patient,histories)[:4]==b'%PDF'
 
 if __name__=='__main__': unittest.main()
