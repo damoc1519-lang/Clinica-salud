@@ -5,7 +5,8 @@ from decimal import Decimal
 import pandas as pd
 from docx import Document
 from docx.shared import Inches,Pt,RGBColor
-from core import TZ
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from core import TZ, proper_name
 
 LABELS={'antecedentes_pers':'Antecedentes personales','antecedentes_fam':'Antecedentes familiares','habitos':'Hábitos de vida','motivo':'Motivo de consulta','enfermedad_actual':'Enfermedad actual','peso':'Peso (kg)','talla':'Talla (cm)','pa':'Presión arterial','fc':'Frecuencia cardíaca','imc':'IMC','diagnostico':'Diagnóstico','tratamiento':'Tratamiento / indicaciones','examenes':'Exámenes complementarios'}
 def pretty(value):
@@ -22,16 +23,17 @@ def word_history(patient,histories):
         section.footer.paragraphs[0].text='Documento confidencial · Copia exportada del sistema'
     d.add_heading('Expediente clínico',0)
     for key,label in [('name','Paciente'),('document','Documento'),('sex','Sexo'),('birth_date','Nacimiento'),('phone','Teléfono'),('email','Correo'),('address','Dirección'),('occupation','Ocupación'),('coverage','Cobertura')]:
-        p=d.add_paragraph(); p.add_run(label+': ').bold=True; p.add_run(pretty(patient.get(key)))
+        value=proper_name(patient.get(key)) if key=='name' else pretty(patient.get(key))
+        p=d.add_paragraph(); p.add_run(label+': ').bold=True; p.add_run(value)
     for h in histories:
         if h['status']!='Finalizada': continue
         d.add_heading(f"Atención · {pretty(h['occurred_at'])}",1)
-        d.add_paragraph(f"Médico: {h['doctor']} · Especialidad: {pretty(h.get('specialty'))} · Tipo: {h['consultation_type']}")
+        d.add_paragraph(f"Médico: {proper_name(h['doctor'])} · Especialidad: {pretty(h.get('specialty'))} · Tipo: {h['consultation_type']}")
         for key,label in LABELS.items():
             p=d.add_paragraph(); p.add_run(label+': ').bold=True; p.add_run(pretty(h['data'].get(key)))
         for a in h.get('amendments',[]):
             d.add_heading('Nota adicional / corrección',2)
-            d.add_paragraph(f"{pretty(a['created_at'])} · {a['author']}\nMotivo: {a['reason']}\n{a['text']}")
+            d.add_paragraph(f"{pretty(a['created_at'])} · {proper_name(a['author'])}\nMotivo: {a['reason']}\n{a['text']}")
     if not any(h['status']=='Finalizada' for h in histories): d.add_paragraph('No hay consultas finalizadas.')
     out=io.BytesIO(); d.save(out); return out.getvalue()
 def excel(sheets):
@@ -51,6 +53,26 @@ def excel(sheets):
             pd.DataFrame(data).to_excel(writer,sheet_name=name[:31],index=False)
             sheet=writer.sheets[name[:31]]; sheet.freeze_panes='A2'
             sheet.auto_filter.ref=sheet.dimensions
+            sheet.sheet_view.showGridLines=False
+            sheet.auto_filter.ref=sheet.dimensions
+            header_fill=PatternFill('solid',fgColor='0F4C5C')
+            stripe_fill=PatternFill('solid',fgColor='EAF4F5')
+            edge=Side(style='thin',color='D5E3E7')
+            for cell in sheet[1]:
+                cell.fill=header_fill
+                cell.font=Font(color='FFFFFF',bold=True)
+                cell.alignment=Alignment(horizontal='center',vertical='center')
+                cell.border=Border(bottom=edge)
+            sheet.row_dimensions[1].height=24
+            for row_index,row in enumerate(sheet.iter_rows(min_row=2),start=2):
+                for cell in row:
+                    if row_index%2==0: cell.fill=stripe_fill
+                    cell.alignment=Alignment(vertical='top',wrap_text=True)
+                    cell.border=Border(bottom=edge)
             for col in sheet.columns:
                 sheet.column_dimensions[col[0].column_letter].width=min(55,max(14,max(len(str(c.value or '')) for c in col)+2))
+            sheet.page_setup.orientation='landscape'
+            sheet.page_setup.fitToWidth=1
+            sheet.sheet_properties.pageSetUpPr.fitToPage=True
+            sheet.auto_filter.ref=sheet.dimensions
     return out.getvalue()

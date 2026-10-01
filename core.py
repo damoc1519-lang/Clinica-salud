@@ -24,6 +24,11 @@ def json_default(v):
     if isinstance(v,Decimal): return float(v)
     raise TypeError(type(v).__name__)
 def clean(v): return str(v or '').strip()
+def proper_name(value):
+    """Normaliza nombres personales conservando partículas comunes en español."""
+    words=clean(value).lower().split()
+    particles={'de','del','la','las','los','y','e'}
+    return ' '.join((word.capitalize() if i==0 or word not in particles else word) for i,word in enumerate(words))
 def normalize_doc(v): return re.sub(r'\s+', '', clean(v)).upper()
 def password_hash(password):
     if len(password)<12: raise AppError('Use una contraseña de al menos 12 caracteres.')
@@ -65,6 +70,7 @@ def slots_for_day(day,rules,busy,blocks,duration,clock=None):
 def validate_patient(data):
     p={k:clean(data.get(k)) for k in ['document','name','sex','address','phone','email','occupation','coverage','origin']}
     p['document']=normalize_doc(p['document'])
+    p['name']=proper_name(p['name'])
     if not p['document'] or len(p['document'])>30: raise AppError('Ingrese un documento de 1 a 30 caracteres.')
     if len(p['name'])<3: raise AppError('Ingrese el nombre completo.')
     if p['email'] and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',p['email']): raise AppError('Revise el correo electrónico.')
@@ -145,7 +151,7 @@ class Database:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
             c.execute('SELECT COUNT(*) AS n FROM users')
             if c.fetchone()['n']: raise AppError('Ya existen usuarios. El alta inicial está cerrada.')
-            c.execute("INSERT INTO users(username,name,password_hash,role,must_change) VALUES(%s,%s,%s,'admin',FALSE)",(username,clean(name),encoded))
+            c.execute("INSERT INTO users(username,name,password_hash,role,must_change) VALUES(%s,%s,%s,'admin',FALSE)",(username,proper_name(name),encoded))
             self.audit(c,None,'alta_inicial','users')
     def login(self,username,password):
         username=clean(username).lower(); result=None
@@ -185,6 +191,7 @@ class Database:
         with self.tx() as c:
             a=self.actor(c,uid,['admin']); c.execute('SELECT pg_advisory_xact_lock(861231)')
             username=clean(data['username']).lower(); role=data['role']; doctor=data.get('doctor_id') if role=='medico' else None
+            display_name=proper_name(data['name'])
             if not re.fullmatch(r'[a-z0-9_.@-]{3,80}',username) or not clean(data['name']): raise AppError('Revise usuario y nombre.')
             if role=='medico' and not doctor: raise AppError('Seleccione el médico de la cuenta.')
             if target==uid and (not data['active'] or role!='admin'): raise AppError('No puede desactivar o quitar su propio rol administrador.')
@@ -195,11 +202,11 @@ class Database:
                     c.execute("SELECT count(*) AS n FROM users WHERE role='admin' AND active")
                     if c.fetchone()['n']<=1: raise AppError('Debe conservar al menos una cuenta administradora activa.')
                 c.execute('UPDATE users SET username=%s,name=%s,role=%s,doctor_id=%s,active=%s,auth_version=auth_version+1 WHERE id=%s',
-                          (username,data['name'],role,doctor,data['active'],target))
+                    (username,display_name,role,doctor,data['active'],target))
             else:
                 if not temp_password: raise AppError('Ingrese una contraseña temporal individual.')
                 c.execute('INSERT INTO users(username,name,role,doctor_id,active,password_hash) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id',
-                          (username,data['name'],role,doctor,data['active'],password_hash(temp_password))); target=c.fetchone()['id']
+                    (username,display_name,role,doctor,data['active'],password_hash(temp_password))); target=c.fetchone()['id']
             if temp_password:
                 c.execute('UPDATE users SET password_hash=%s,must_change=TRUE,auth_version=auth_version+1 WHERE id=%s',(password_hash(temp_password),target))
                 c.execute('DELETE FROM login_attempts WHERE username=%s',(username,))
@@ -208,7 +215,7 @@ class Database:
         with self.tx() as c:
             self.actor(c,uid); c.execute('SELECT * FROM doctors WHERE (%s OR active) ORDER BY name',(all_rows,)); return c.fetchall()
     def save_doctor(self,uid,data,target=None,version=None):
-        name=clean(data['name']); specialties=[clean(x) for x in data['specialties'] if clean(x)]
+        name=proper_name(data['name']); specialties=[clean(x).capitalize() for x in data['specialties'] if clean(x)]
         if not name or not specialties: raise AppError('Complete nombre y especialidades.')
         with self.tx() as c:
             a=self.actor(c,uid,['admin'])

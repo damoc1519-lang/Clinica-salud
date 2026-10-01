@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from psycopg2.errors import ExclusionViolation, UniqueViolation
 
-from core import Database, AppError, TZ, WEEKDAYS, STATUSES, now, local_datetime
+from core import Database, AppError, TZ, WEEKDAYS, STATUSES, now, local_datetime, proper_name
 from exports import word_history, excel
 from legacy import preview as legacy_preview, import_legacy, issues as legacy_issues
 
@@ -20,7 +20,7 @@ st.markdown("""
   --med-bg:#f3f7fa;
   --med-surface:#ffffff;
   --med-text:#17313a;
-  --med-muted:#627680;
+  --med-muted:#506670;
   --med-border:#dce7ec;
 }
 .stApp{
@@ -48,7 +48,7 @@ p,.stCaption{color:var(--med-muted)}
   background:rgba(255,255,255,.10)!important;
   border-color:rgba(255,255,255,.28)!important;
 }
-[data-testid="stForm"],div[data-testid="stExpander"]{
+[data-testid="stForm"],[data-testid="stMainBlockContainer"] div[data-testid="stExpander"]{
   background:rgba(255,255,255,.94);
   border:1px solid var(--med-border)!important;
   border-radius:16px!important;
@@ -84,6 +84,17 @@ button[kind="primary"]{
   box-shadow:0 6px 16px rgba(15,76,92,.20);
 }
 button[kind="primary"]:hover{color:white!important;box-shadow:0 8px 20px rgba(15,76,92,.28)}
+.stButton>button:disabled,.stDownloadButton>button:disabled,[data-testid="stFormSubmitButton"]>button:disabled{
+  background:#e3ebee!important;color:#60747c!important;border-color:#cbd9de!important;
+  opacity:1!important;box-shadow:none!important;transform:none!important;
+}
+[data-testid="stSidebar"] div[data-testid="stExpander"]{
+  background:rgba(255,255,255,.07)!important;
+  border:1px solid rgba(255,255,255,.22)!important;
+  box-shadow:none!important;
+}
+[data-testid="stSidebar"] div[data-testid="stExpander"] summary,
+[data-testid="stSidebar"] div[data-testid="stExpander"] summary *{color:#f4fbfc!important}
 .stTabs [data-baseweb="tab-list"]{
   gap:.35rem;background:#e9f1f4;padding:.35rem;border-radius:12px;
 }
@@ -207,16 +218,16 @@ with st.sidebar.expander("Cambiar mi contraseña"):
                 st.session_state.clear(); st.rerun()
 
 def doctors(active=True): return db.doctors(UID,all_rows=not active)
-def doctor_map(active=True): return {d['name']:d for d in doctors(active)}
+def doctor_map(active=True): return {proper_name(d['name']):d for d in doctors(active)}
 def patient_picker(key,active=True):
     query=st.text_input("Buscar por nombre, documento o teléfono",key=key+"_q")
     rows=db.patients(UID,query,archived=not active)
     if not rows: st.info("No hay pacientes que coincidan."); return None
-    labels={f"{p['name']} · {p['document']}":p for p in rows}
+    labels={f"{proper_name(p['name'])} · {p['document']}":p for p in rows}
     return labels[st.selectbox("Paciente",labels,key=key+"_p")]
 def fmt_dt(v): return v.astimezone(TZ).strftime('%d/%m/%Y %H:%M') if v else ''
 def appointment_table(rows):
-    return pd.DataFrame([{'Hora':fmt_dt(r['start_at']),'Paciente':r['patient'],'Documento':r['document'],'Teléfono':r['phone'],'Médico':r['doctor'],'Especialidad':r['specialty'],'Estado':r['status']} for r in rows])
+    return pd.DataFrame([{'Hora':fmt_dt(r['start_at']),'Paciente':proper_name(r['patient']),'Documento':r['document'],'Teléfono':r['phone'],'Médico':proper_name(r['doctor']),'Especialidad':r['specialty'],'Estado':r['status']} for r in rows])
 
 def dashboard():
     st.title("Agenda de hoy")
@@ -277,7 +288,7 @@ def patients_page():
             q=st.text_input("Buscar archivados")
             archived=[p for p in db.patients(UID,q,archived=True) if not p['active']]
             if archived:
-                labels={f"{p['name']} · {p['document']}":p for p in archived}; p=labels[st.selectbox("Archivado",labels)]
+                labels={f"{proper_name(p['name'])} · {p['document']}":p for p in archived}; p=labels[st.selectbox("Archivado",labels)]
                 st.warning(f"Motivo: {p['archive_reason'] or 'No registrado'}")
                 reason=st.text_input("Motivo de reactivación")
                 if st.button("Reactivar"): run(lambda:db.archive_patient(UID,p['id'],reason,True),"Paciente reactivado.")
@@ -425,7 +436,7 @@ def doctors_page():
 def users_page():
     st.title("Usuarios")
     rows=db.users(UID); st.dataframe(pd.DataFrame(rows),hide_index=True)
-    labels={'Nueva cuenta':None}|{f"{r['name']} · {r['username']}":r for r in rows}; selected=labels[st.selectbox("Cuenta",labels)]
+    labels={'Nueva cuenta':None}|{f"{proper_name(r['name'])} · {r['username']}":r for r in rows}; selected=labels[st.selectbox("Cuenta",labels)]
     dm=doctor_map(); names=list(dm)
     with st.form('user_form'):
         username=st.text_input("Usuario",value=selected['username'] if selected else '')
@@ -443,8 +454,26 @@ def reports_page(full=False):
     st.title("Reportes y respaldo" if full else "Reportes")
     first,last=st.date_input("Periodo del reporte",value=(now().date().replace(day=1),now().date()),format='DD/MM/YYYY',key='report_dates')
     rows=db.appointments(UID,first,last)
+    report_rows=[{
+        'Fecha':r['start_at'].astimezone(TZ).strftime('%d/%m/%Y'),
+        'Hora':r['start_at'].astimezone(TZ).strftime('%H:%M'),
+        'Paciente':proper_name(r['patient']),
+        'Documento':r['document'],
+        'Teléfono':r['phone'] or '',
+        'Médico':proper_name(r['doctor']),
+        'Especialidad':str(r['specialty'] or '').capitalize(),
+        'Estado':r['status'],
+        'Autorización':r.get('authorization_code') or '',
+        'Vencimiento':r.get('expires_on'),
+        'Observaciones':r.get('notes') or ''
+    } for r in rows]
+    st.caption(f"Periodo: {first.strftime('%d/%m/%Y')} al {last.strftime('%d/%m/%Y')} · {len(report_rows)} cita(s)")
+    if report_rows:
+        st.dataframe(pd.DataFrame(report_rows),hide_index=True,use_container_width=True)
+    else:
+        st.info("No existen citas en el periodo seleccionado.")
     if st.button("Preparar agenda Excel"):
-        prepared=run(lambda:(db.export_event(UID,'agenda'),excel({'Agenda':rows}))[1],rerun=False)
+        prepared=run(lambda:(db.export_event(UID,'agenda'),excel({'Agenda':report_rows}))[1],rerun=False)
         if prepared: st.session_state.report_excel=prepared
     if st.session_state.get('report_excel'):
         st.download_button("Descargar agenda Excel",st.session_state.report_excel,f"Agenda_{first}_{last}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
