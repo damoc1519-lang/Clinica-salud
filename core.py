@@ -94,7 +94,7 @@ def clinical_data(data,final=False):
         except (ValueError,TypeError): raise AppError(f'Revise el valor de {key}.')
         if not 0<value<=maximum: raise AppError(f'Revise el valor de {key}.')
         result[key]=value
-    result['fum']=parse_date(data.get('fum'))
+    fum=parse_date(data.get('fum')); result['fum']=fum.isoformat() if fum else None
     result['contaminado']=bool(data.get('contaminado')); result['sedacion']=bool(data.get('sedacion'))
     result['imc']=round(result['peso']/(result['talla']/100)**2,2) if result['peso'] and result['talla'] else None
     if final and (not result['motivo'] or not result['diagnostico']): raise AppError('Complete motivo y diagnóstico antes de finalizar.')
@@ -192,9 +192,10 @@ class Database:
             if password_ok(new,a['password_hash']): raise AppError('Elija una contraseña diferente.')
             c.execute('UPDATE users SET password_hash=%s,must_change=FALSE,auth_version=auth_version+1 WHERE id=%s',(encoded,uid))
             self.audit(c,a,'cambio_clave','users',uid)
-    def users(self,uid):
+    def users(self,uid,query='',include_inactive=True):
         with self.tx() as c:
-            self.actor(c,uid,['admin']); c.execute('SELECT id,username,name,role,doctor_id,active FROM users ORDER BY name'); return c.fetchall()
+            self.actor(c,uid,['admin']); q='%'+clean(query)+'%'
+            c.execute('SELECT id,username,name,role,doctor_id,active FROM users WHERE (%s OR active) AND (name ILIKE %s OR username ILIKE %s) ORDER BY active DESC,name',(include_inactive,q,q)); return c.fetchall()
     def save_user(self,uid,data,target=None,temp_password=None):
         with self.tx() as c:
             a=self.actor(c,uid,['admin']); c.execute('SELECT pg_advisory_xact_lock(861231)')
@@ -219,6 +220,21 @@ class Database:
                 c.execute('UPDATE users SET password_hash=%s,must_change=TRUE,auth_version=auth_version+1 WHERE id=%s',(password_hash(temp_password),target))
                 c.execute('DELETE FROM login_attempts WHERE username=%s',(username,))
             self.audit(c,a,'actualizar_usuario','users',target)
+    def delete_user(self,uid,target):
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin'])
+            if target==uid: raise AppError('No puede eliminar su propia cuenta.')
+            c.execute('SELECT * FROM users WHERE id=%s FOR UPDATE',(target,)); user=c.fetchone()
+            if not user: raise AppError('La cuenta ya no existe.')
+            if user['role']=='admin' and user['active']:
+                c.execute("SELECT count(*) AS n FROM users WHERE role='admin' AND active")
+                if c.fetchone()['n']<=1: raise AppError('Debe conservar al menos una cuenta administradora activa.')
+            c.execute('''SELECT EXISTS(SELECT 1 FROM audit WHERE actor_id=%s) OR EXISTS(SELECT 1 FROM encounters WHERE author_id=%s)
+                         OR EXISTS(SELECT 1 FROM amendments WHERE author_id=%s) AS used''',(target,target,target)); used=c.fetchone()['used']
+            if used:
+                c.execute("UPDATE users SET active=FALSE,username=%s,doctor_id=NULL,auth_version=auth_version+1 WHERE id=%s",(f"eliminado_{target}_{int(now().timestamp())}",target))
+                self.audit(c,a,'desactivar_usuario_con_historial','users',target); return 'Cuenta retirada. Se conservó su autoría clínica y auditoría.'
+            c.execute('DELETE FROM login_attempts WHERE username=%s',(user['username'],)); c.execute('DELETE FROM users WHERE id=%s',(target,)); self.audit(c,a,'eliminar_usuario','users',target); return 'Cuenta eliminada definitivamente.'
     def doctors(self,uid,all_rows=False):
         with self.tx() as c:
             self.actor(c,uid); c.execute('SELECT * FROM doctors WHERE (%s OR active) ORDER BY name',(all_rows,)); return c.fetchall()
@@ -238,6 +254,12 @@ class Database:
             else:
                 c.execute('INSERT INTO doctors(name,specialties,slot_minutes,professional_id,registration) VALUES(%s,%s,%s,%s,%s) RETURNING id',(name,specialties,data['slot_minutes'],clean(data.get('professional_id')),clean(data.get('registration')))); target=c.fetchone()['id']
             self.audit(c,a,'guardar_medico','doctors',target)
+    def update_my_professional(self,uid,professional_id,registration):
+        with self.tx() as c:
+            a=self.actor(c,uid,['medico'])
+            if not clean(professional_id) or not clean(registration): raise AppError('Complete documento de identificación y registro profesional.')
+            c.execute('UPDATE doctors SET professional_id=%s,registration=%s,version=version+1 WHERE id=%s',(clean(professional_id),clean(registration),a['doctor_id']))
+            self.audit(c,a,'actualizar_perfil_profesional','doctors',a['doctor_id'])
     def patient_scope(self,c,a,pid,clinical=False):
         if clinical and a['role']=='secretaria': raise AppError('El historial clínico requiere un perfil médico o administrador.')
         if a['role']=='medico':
@@ -278,19 +300,27 @@ class Database:
         if len(name)<2: raise AppError('Ingrese el nombre del convenio.')
         if email and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email): raise AppError('Revise el correo del convenio.')
         if start and end and end<start: raise AppError('La fecha final no puede ser anterior a la inicial.')
-        values=(name,code,clean(data.get('tax_id')),proper_name(data.get('contact_name')),clean(data.get('phone')),email,start,end,clean(data.get('notes')),bool(data.get('requires_authorization')),bool(data.get('active',True)))
+        values=(name,code,clean(data.get('tax_id')),proper_name(data.get('contact_name')),clean(data.get('phone')),email,start,end,clean(data.get('notes')),bool(data.get('requires_validation_date')),bool(data.get('active',True)))
         with self.tx() as c:
             a=self.actor(c,uid,['admin'])
             if target:
                 c.execute('''UPDATE agreements SET name=%s,code=%s,tax_id=%s,contact_name=%s,phone=%s,email=%s,
-                             start_date=%s,end_date=%s,notes=%s,requires_authorization=%s,active=%s,version=version+1,updated_at=now()
+                             start_date=%s,end_date=%s,notes=%s,requires_validation_date=%s,active=%s,version=version+1,updated_at=now()
                              WHERE id=%s AND version=%s RETURNING id''',values+(target,version))
                 if not c.fetchone(): raise AppError('El convenio cambió en otra sesión. Actualice la pantalla.')
             else:
-                c.execute('''INSERT INTO agreements(name,code,tax_id,contact_name,phone,email,start_date,end_date,notes,requires_authorization,active)
+                c.execute('''INSERT INTO agreements(name,code,tax_id,contact_name,phone,email,start_date,end_date,notes,requires_validation_date,active)
                              VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id''',values); target=c.fetchone()['id']
             self.audit(c,a,'guardar_convenio','agreements',target)
             return target
+    def delete_agreement(self,uid,target):
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin']); c.execute('SELECT * FROM agreements WHERE id=%s FOR UPDATE',(target,)); agreement=c.fetchone()
+            if not agreement: raise AppError('El convenio ya no existe.')
+            c.execute('SELECT EXISTS(SELECT 1 FROM patient_agreements WHERE agreement_id=%s) OR EXISTS(SELECT 1 FROM appointments WHERE agreement_id=%s) AS used',(target,target)); used=c.fetchone()['used']
+            if used:
+                c.execute('UPDATE agreements SET active=FALSE,version=version+1,updated_at=now() WHERE id=%s',(target,)); self.audit(c,a,'archivar_convenio','agreements',target); return 'Convenio archivado porque tiene pacientes o citas relacionadas.'
+            c.execute('DELETE FROM agreements WHERE id=%s',(target,)); self.audit(c,a,'eliminar_convenio','agreements',target); return 'Convenio eliminado definitivamente.'
     def patient_agreements(self,uid,pid,active_only=True):
         with self.tx() as c:
             a=self.actor(c,uid); self.patient_scope(c,a,pid)
@@ -376,7 +406,7 @@ class Database:
             if a['role']=='medico': more+=' AND x.doctor_id=%s'; args.append(a['doctor_id'])
             if status: more+=' AND x.status=%s'; args.append(status)
             c.execute('SELECT x.*,p.name AS patient,p.document,p.phone,d.name AS doctor,a.name AS agreement FROM appointments x JOIN patients p ON p.id=x.patient_id JOIN doctors d ON d.id=x.doctor_id LEFT JOIN agreements a ON a.id=x.agreement_id WHERE x.start_at>=%s AND x.start_at<%s'+more+' ORDER BY x.start_at',args); return c.fetchall()
-    def book(self,uid,pid,did,specialty,start,duration,agreement_id=None,authorization='',expires=None,notes='',aid=None,version=None):
+    def book(self,uid,pid,did,specialty,start,duration,agreement_id=None,validation_date=None,notes='',aid=None,version=None):
         end=start+timedelta(minutes=int(duration))
         if start<now() or not 5<=duration<=240 or start.date()!=end.date(): raise AppError('Elija un horario futuro y una duración de 5 a 240 minutos.')
         with self.tx() as c:
@@ -390,10 +420,8 @@ class Database:
                 c.execute('''SELECT a.* FROM patient_agreements pa JOIN agreements a ON a.id=pa.agreement_id
                              WHERE pa.patient_id=%s AND pa.agreement_id=%s AND pa.active AND a.active''',(pid,agreement_id)); agreement=c.fetchone()
                 if not agreement: raise AppError('El paciente no está afiliado a ese convenio activo.')
-            if agreement and agreement['requires_authorization']:
-                if not clean(authorization) or not expires: raise AppError('Complete la autorización del convenio y su vencimiento.')
-                if expires<start.date(): raise AppError('La autorización vence antes de la cita.')
-            elif not agreement: authorization=''; expires=None
+            if agreement and agreement['requires_validation_date'] and not validation_date: raise AppError('Ingrese la fecha de validación del convenio.')
+            if not agreement: validation_date=None
             c.execute('SELECT * FROM availability WHERE doctor_id=%s',(did,)); rules=c.fetchall()
             if not any(r['weekday']==start.weekday() and r['start_time']<=start.time().replace(tzinfo=None) and r['end_time']>=end.time().replace(tzinfo=None) for r in rules): raise AppError('La cita está fuera del horario del médico.')
             c.execute('SELECT id FROM blocks WHERE doctor_id=%s AND start_at<%s AND end_at>%s',(did,end,start))
@@ -402,10 +430,10 @@ class Database:
                 c.execute('SELECT * FROM appointments WHERE id=%s FOR UPDATE',(aid,)); old=c.fetchone()
                 if not old or old['version']!=version: raise AppError('La cita cambió en otra sesión. Actualice la pantalla.')
                 if old['status'] not in ('Pendiente','Confirmada','Llegó'): raise AppError('Esta cita ya no permite reagendamiento.')
-                c.execute("UPDATE appointments SET doctor_id=%s,specialty=%s,start_at=%s,end_at=%s,agreement_id=%s,authorization_code=%s,expires_on=%s,notes=%s,status='Pendiente',version=version+1 WHERE id=%s",(did,specialty,start,end,agreement_id,authorization,expires,notes,aid))
+                c.execute("UPDATE appointments SET doctor_id=%s,specialty=%s,start_at=%s,end_at=%s,agreement_id=%s,validation_date=%s,authorization_code='',expires_on=NULL,notes=%s,status='Pendiente',version=version+1 WHERE id=%s",(did,specialty,start,end,agreement_id,validation_date,notes,aid))
                 self.audit(c,a,'reagendar','appointments',aid,{'anterior':old['start_at'],'nuevo':start})
             else:
-                c.execute('INSERT INTO appointments(patient_id,doctor_id,specialty,start_at,end_at,agreement_id,authorization_code,expires_on,notes) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',(pid,did,specialty,start,end,agreement_id,authorization,expires,notes)); aid=c.fetchone()['id']; self.audit(c,a,'agendar','appointments',aid)
+                c.execute("INSERT INTO appointments(patient_id,doctor_id,specialty,start_at,end_at,agreement_id,validation_date,authorization_code,expires_on,notes) VALUES(%s,%s,%s,%s,%s,%s,%s,'',NULL,%s) RETURNING id",(pid,did,specialty,start,end,agreement_id,validation_date,notes)); aid=c.fetchone()['id']; self.audit(c,a,'agendar','appointments',aid)
             return aid
     def appointment(self,c,a,aid):
         c.execute('SELECT * FROM appointments WHERE id=%s FOR UPDATE',(aid,)); r=c.fetchone()
@@ -437,6 +465,7 @@ class Database:
             if not r: raise AppError('La consulta no existe.')
             self.patient_scope(c,a,r['patient_id'],True)
             if r['status']=='Borrador' and a['role']=='medico' and r['author_id']!=uid: raise AppError('El borrador pertenece a otro médico.')
+            c.execute("SELECT data FROM encounters WHERE patient_id=%s AND id<>%s AND status='Finalizada' ORDER BY occurred_at DESC LIMIT 1",(r['patient_id'],eid)); previous=c.fetchone(); r['previous_data']=previous['data'] if previous else {}
             return r
     def save_encounter(self,uid,eid,data,version,final=False):
         data=clinical_data(data,final)
@@ -482,7 +511,7 @@ class Database:
             payload={}
             for table in BACKUP_TABLES:
                 c.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(table))); payload[table]=[dict(r) for r in c.fetchall()]
-        raw=json.dumps({'version':4,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
+        raw=json.dumps({'version':5,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
         out=io.BytesIO()
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
             z.writestr('datos.json',raw); z.writestr('sha256.txt',hashlib.sha256(raw).hexdigest())
@@ -493,7 +522,7 @@ class Database:
             raw=z.read('datos.json')
             if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(),z.read('sha256.txt').decode().strip()): raise AppError('El respaldo está dañado.')
         data=json.loads(raw)
-        if data.get('version')!=4 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
+        if data.get('version')!=5 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
         with self.tx() as c:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
             for table in BACKUP_TABLES:

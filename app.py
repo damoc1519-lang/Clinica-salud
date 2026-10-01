@@ -217,6 +217,14 @@ with st.sidebar.expander("Cambiar mi contraseña"):
             changed=run(lambda:db.change_password(UID,old,new),"Contraseña actualizada; ingrese nuevamente.",False)
             if changed:
                 st.session_state.clear(); st.rerun()
+if ROLE=='medico':
+    profile=next((d for d in db.doctors(UID,all_rows=True) if d['id']==DOCTOR),None)
+    with st.sidebar.expander("Mi información profesional"):
+        with st.form("my_professional_profile"):
+            professional_id=st.text_input("Documento",value=(profile or {}).get('professional_id') or '')
+            registration=st.text_input("Número de registro profesional",value=(profile or {}).get('registration') or '')
+            if st.form_submit_button("Guardar mis datos"):
+                run(lambda:db.update_my_professional(UID,professional_id,registration),"Información profesional actualizada.")
 
 def doctors(active=True): return db.doctors(UID,all_rows=not active)
 def doctor_map(active=True): return {proper_name(d['name']):d for d in doctors(active)}
@@ -332,9 +340,11 @@ def agreements_page():
     rows=db.agreements(UID)
     if rows:
         st.dataframe(pd.DataFrame([{'Convenio':proper_name(a['name']),'Código':a['code'] or '', 'Pacientes activos':a['patient_count'],
-                                   'Exige autorización':'Sí' if a['requires_authorization'] else 'No','Vigente':'Sí' if a['active'] else 'No'} for a in rows]),hide_index=True,use_container_width=True)
+                                   'Exige fecha de validación':'Sí' if a['requires_validation_date'] else 'No','Vigente':'Sí' if a['active'] else 'No'} for a in rows]),hide_index=True,use_container_width=True)
     if ROLE=='admin':
-        labels={'Nuevo convenio':None}|{proper_name(a['name']):a for a in rows}; selected=labels[st.selectbox("Crear o editar",labels,key='agreement_edit')]
+        agreement_query=st.text_input("Buscar convenio",key='agreement_query')
+        filtered=[a for a in rows if agreement_query.lower() in a['name'].lower()]
+        labels={'Nuevo convenio':None}|{proper_name(a['name']):a for a in filtered}; selected=labels[st.selectbox("Crear o editar",labels,key='agreement_edit')]
         with st.form('agreement_form'):
             a,b=st.columns(2)
             with a:
@@ -345,13 +355,16 @@ def agreements_page():
             with b:
                 phone=st.text_input("Teléfono",value=selected['phone'] or '' if selected else '')
                 email=st.text_input("Correo",value=selected['email'] or '' if selected else '')
-                requires=st.checkbox("Exige autorización para cada cita",value=selected['requires_authorization'] if selected else False)
+                requires=st.checkbox("Exige fecha de validación para cada cita",value=selected['requires_validation_date'] if selected else False)
                 active=st.checkbox("Convenio activo",value=selected['active'] if selected else True)
             notes=st.text_area("Observaciones",value=selected['notes'] or '' if selected else '')
             if st.form_submit_button("Guardar convenio",type='primary'):
                 data={'name':name,'code':code,'tax_id':tax_id,'contact_name':contact,'phone':phone,'email':email,'notes':notes,
-                      'requires_authorization':requires,'active':active,'start_date':selected.get('start_date') if selected else None,'end_date':selected.get('end_date') if selected else None}
+                      'requires_validation_date':requires,'active':active,'start_date':selected.get('start_date') if selected else None,'end_date':selected.get('end_date') if selected else None}
                 run(lambda:db.save_agreement(UID,data,selected['id'] if selected else None,selected['version'] if selected else None),"Convenio guardado.")
+        if selected:
+            confirm_agreement=st.checkbox("Confirmo que deseo eliminar o archivar este convenio",key='confirm_delete_agreement')
+            if st.button("Eliminar convenio",disabled=not confirm_agreement): run(lambda:db.delete_agreement(UID,selected['id']),"Convenio retirado.")
     active=[a for a in rows if a['active']]
     st.subheader("Importar pacientes")
     template=Path(__file__).parent/'plantilla_importacion_pacientes.xlsx'
@@ -423,13 +436,12 @@ def booking_form(existing=None):
     options={'Particular':None}|{a['name']:a for a in linked}
     current=next((name for name,a in options.items() if a and existing and a['id']==existing.get('agreement_id')),'Particular')
     agreement_name=st.selectbox("Facturación / convenio",list(options),index=list(options).index(current),key='bc'+str(existing and existing['id']))
-    agreement=options[agreement_name]; needs_auth=bool(agreement and agreement['requires_authorization'])
-    authorization=st.text_input("Número de autorización",value=(existing.get('authorization_code') or '') if existing else '',disabled=not agreement,key='ba'+str(existing and existing['id']))
-    expires=st.date_input("Vencimiento autorización",value=existing.get('expires_on') if existing and existing.get('expires_on') else day,disabled=not agreement,format='DD/MM/YYYY',key='be'+str(existing and existing['id']))
-    if needs_auth: st.caption("Este convenio exige autorización vigente para agendar.")
+    agreement=options[agreement_name]; needs_validation=bool(agreement and agreement['requires_validation_date'])
+    validation_date=st.date_input("Fecha de validación del convenio",value=existing.get('validation_date') if existing and existing.get('validation_date') else None,disabled=not agreement,format='DD/MM/YYYY',key='bv'+str(existing and existing['id']))
+    if needs_validation: st.caption("Este convenio exige registrar la fecha en que se validó la atención.")
     notes=st.text_area("Observaciones",value=(existing.get('notes') or '') if existing else '',key='bn'+str(existing and existing['id']))
     if st.button("Guardar reagendamiento" if existing else "Agendar",type="primary",key='save_book'+str(existing and existing['id'])):
-        run(lambda:db.book(UID,p['id'],d['id'],specialty,labels[selected],duration,agreement['id'] if agreement else None,authorization,expires if agreement else None,notes,existing['id'] if existing else None,existing['version'] if existing else None),"Cita guardada.")
+        run(lambda:db.book(UID,p['id'],d['id'],specialty,labels[selected],duration,agreement['id'] if agreement else None,validation_date if agreement else None,notes,existing['id'] if existing else None,existing['version'] if existing else None),"Cita guardada.")
 
 CONDITIONS=['Cardiopatía','Hipertensión','Enfermedad cerebrovascular','Endócrino-metabólica','Cáncer','Tuberculosis','Enfermedad mental','Enfermedad infecciosa','Malformación','Otra']
 SYSTEMS=['Piel y anexos','Órganos de los sentidos','Respiratorio','Cardiovascular','Digestivo','Genitourinario','Músculo-esquelético','Endócrino','Hemolinfático','Nervioso']
@@ -444,16 +456,27 @@ LAB_TESTS=['Biometría hemática','Hematocrito','Hemoglobina','Plaquetas','Retic
  'Grupo y factor','Coombs directo','Coombs indirecto','Cultivo y antibiograma','Estudio micológico','Marcadores tumorales']
 def clinical_form(enc):
     data=enc['data'] or {}
+    previous=enc.get('previous_data') or {}
+    existing_extras=[]
+    if data.get('prescription'): existing_extras.append('Receta')
+    if data.get('lab_tests') or data.get('other_lab_tests'): existing_extras.append('Laboratorio')
+    if data.get('imaging_types'): existing_extras.append('Imagenología')
+    if data.get('interconsult_specialty'): existing_extras.append('Interconsulta')
+    if data.get('referral_type'): existing_extras.append('Referencia / derivación')
+    extras=st.multiselect("Documentos adicionales",['Receta','Laboratorio','Imagenología','Interconsulta','Referencia / derivación'],default=existing_extras,key='clinical_extras')
+    normal_exam=st.checkbox("Examen físico sin hallazgos relevantes",value=data.get('physical_details')=='Sin hallazgos patológicos relevantes.',key='normal_exam')
+    def prior(key,default=''): return data.get(key,previous.get(key,default))
+    if previous and not data: st.caption("Se recuperaron antecedentes, alergias y hábitos de la consulta anterior para que el médico los confirme.")
     with st.form('clinical_form'):
         st.subheader(f"Consulta {enc['consultation_type']}")
-        t1,t2,t3,t4,t5=st.tabs(['Anamnesis','Examen físico','Diagnóstico y plan','Solicitudes','Receta'])
+        t1,t2,t3=st.tabs(['1. Motivo y antecedentes','2. Examen y diagnóstico','3. Indicaciones']); t4=t5=t3
         with t1:
             motivo=st.text_area("Motivo de consulta *",value=data.get('motivo',''))
-            personal_conditions=st.multiselect("Antecedentes patológicos personales",CONDITIONS,default=data.get('personal_conditions',[]))
-            personal_details=st.text_area("Datos clínicos, quirúrgicos, obstétricos y alérgicos relevantes",value=data.get('personal_details',''))
-            family_conditions=st.multiselect("Antecedentes patológicos familiares",CONDITIONS,default=data.get('family_conditions',[]))
-            family_details=st.text_area("Descripción de antecedentes familiares",value=data.get('family_details',''))
-            a,b=st.columns(2); habitos=a.text_area("Hábitos de vida",value=data.get('habitos','')); alergias=b.text_area("Alergias",value=data.get('alergias',''))
+            personal_conditions=st.multiselect("Antecedentes patológicos personales",CONDITIONS,default=prior('personal_conditions',[]))
+            personal_details=st.text_area("Datos clínicos, quirúrgicos, obstétricos y alérgicos relevantes",value=prior('personal_details'))
+            family_conditions=st.multiselect("Antecedentes patológicos familiares",CONDITIONS,default=prior('family_conditions',[]))
+            family_details=st.text_area("Descripción de antecedentes familiares",value=prior('family_details'))
+            a,b=st.columns(2); habitos=a.text_area("Hábitos de vida",value=prior('habitos')); alergias=b.text_area("Alergias",value=prior('alergias'))
             enfermedad_actual=st.text_area("Enfermedad o problema actual: cronología, localización, características, intensidad, frecuencia y agravantes",value=data.get('enfermedad_actual',''))
         with t2:
             c=st.columns(5)
@@ -464,22 +487,28 @@ def clinical_form(enc):
             imc=round(peso/(talla/100)**2,2) if peso and talla else None; c[2].metric("IMC kg/m²",imc or '—')
             perimetro=c[3].number_input("Perímetro abdominal cm",0.0,300.0,float(data.get('perimetro_abdominal') or 0),step=.1); glucosa=c[4].number_input("Glucosa capilar mg/dL",0.0,1000.0,float(data.get('glucosa_capilar') or 0),step=.1)
             hemoglobina=st.number_input("Hemoglobina capilar g/dL",0.0,30.0,float(data.get('hemoglobina_capilar') or 0),step=.1)
-            systems_review=st.multiselect("Revisión de órganos y sistemas con patología",SYSTEMS,default=data.get('systems_review',[])); systems_details=st.text_area("Descripción de la revisión por sistemas",value=data.get('systems_details',''))
-            physical_regional=st.multiselect("Examen físico regional con hallazgos",REGIONAL,default=data.get('physical_regional',[])); physical_systemic=st.multiselect("Examen físico sistémico con hallazgos",SYSTEMIC,default=data.get('physical_systemic',[])); physical_details=st.text_area("Descripción de hallazgos del examen físico",value=data.get('physical_details',''))
+            systems_review=st.multiselect("Revisión de órganos y sistemas con patología",SYSTEMS,default=[] if normal_exam else data.get('systems_review',[])); systems_details=st.text_area("Descripción de la revisión por sistemas",value='Sin hallazgos patológicos relevantes.' if normal_exam else data.get('systems_details',''))
+            physical_regional=st.multiselect("Examen físico regional con hallazgos",REGIONAL,default=[] if normal_exam else data.get('physical_regional',[])); physical_systemic=st.multiselect("Examen físico sistémico con hallazgos",SYSTEMIC,default=[] if normal_exam else data.get('physical_systemic',[])); physical_details=st.text_area("Descripción de hallazgos del examen físico",value='Sin hallazgos patológicos relevantes.' if normal_exam else data.get('physical_details',''))
         with t3:
             diagnostico=st.text_area("Diagnóstico principal *",value=data.get('diagnostico',''))
             diagnoses_text=st.text_area("Diagnósticos codificados: una línea por diagnóstico en formato CIE10 | Presuntivo/Definitivo | Descripción",value='\n'.join(data.get('diagnoses',[])))
             tratamiento=st.text_area("Plan diagnóstico, terapéutico y educacional",value=data.get('tratamiento','')); examenes=st.text_area("Resultados de exámenes y procedimientos relevantes",value=data.get('examenes',''))
         with t4:
+          if 'Interconsulta' in extras:
             interconsult_specialty=st.text_input("Especialidad para interconsulta",value=data.get('interconsult_specialty','')); interconsult_reason=st.text_area("Motivo de interconsulta",value=data.get('interconsult_reason','')); clinical_summary=st.text_area("Resumen del cuadro clínico",value=data.get('clinical_summary','')); exam_results=st.text_area("Hallazgos relevantes",value=data.get('exam_results','')); therapeutic_plan=st.text_area("Plan terapéutico realizado",value=data.get('therapeutic_plan',''))
+          if 'Referencia / derivación' in extras:
             referral_type=st.selectbox("Tipo de referencia",['','Referencia','Derivación','Contrarreferencia','Referencia inversa'],index=['','Referencia','Derivación','Contrarreferencia','Referencia inversa'].index(data.get('referral_type','')) if data.get('referral_type','') in ['','Referencia','Derivación','Contrarreferencia','Referencia inversa'] else 0)
             referral_reasons=st.multiselect("Motivos",['Accesibilidad geográfica','Falta de espacio físico','Falta de equipamiento','Equipos en mal estado','Problemas de infraestructura','Problemas de abastecimiento','Insuficiencia de profesionales','Inadecuada capacidad resolutiva','Ausencia de prestación'],default=data.get('referral_reasons',[]))
             referral_destination=st.text_input("Institución / establecimiento de destino",value=data.get('referral_destination','')); referral_service=st.text_input("Servicio de destino",value=data.get('referral_service','')); referral_specialty=st.text_input("Especialidad de destino",value=data.get('referral_specialty','')); referral_summary=st.text_area("Resumen para referencia",value=data.get('referral_summary','')); referral_findings=st.text_area("Hallazgos para referencia",value=data.get('referral_findings',''))
+          if 'Laboratorio' in extras:
             lab_tests=st.multiselect("Exámenes de laboratorio solicitados",LAB_TESTS,default=data.get('lab_tests',[])); other_lab_tests=st.text_area("Otros exámenes / muestra / sitio anatómico",value=data.get('other_lab_tests','')); lab_treatment=st.text_area("Tratamiento terapéutico relacionado con la solicitud",value=data.get('lab_treatment',''))
-            imaging_types=st.multiselect("Imagenología solicitada",['RX convencional','RX portátil','Tomografía','Resonancia','Ecografía','Mamografía','Procedimiento','Otro'],default=data.get('imaging_types',[])); imaging_description=st.text_area("Descripción del estudio",value=data.get('imaging_description','')); imaging_reason=st.text_area("Motivo de imagenología",value=data.get('imaging_reason','')); fum=st.date_input("FUM (si corresponde)",value=data.get('fum'),format='DD/MM/YYYY'); a,b=st.columns(2); contaminado=a.checkbox("Paciente contaminado",value=bool(data.get('contaminado'))); sedacion=b.checkbox("Requiere sedación",value=bool(data.get('sedacion')))
+          if 'Imagenología' in extras:
+            imaging_types=st.multiselect("Imagenología solicitada",['RX convencional','RX portátil','Tomografía','Resonancia','Ecografía','Mamografía','Procedimiento','Otro'],default=data.get('imaging_types',[])); imaging_description=st.text_area("Descripción del estudio",value=data.get('imaging_description','')); imaging_reason=st.text_area("Motivo de imagenología",value=data.get('imaging_reason','')); fum=st.date_input("FUM (si corresponde)",value=date.fromisoformat(data['fum']) if isinstance(data.get('fum'),str) else data.get('fum'),format='DD/MM/YYYY'); a,b=st.columns(2); contaminado=a.checkbox("Paciente contaminado",value=bool(data.get('contaminado'))); sedacion=b.checkbox("Requiere sedación",value=bool(data.get('sedacion')))
         with t5:
+          if 'Receta' in extras:
             prescription=st.text_area("Medicamentos: una línea por medicamento en formato Nombre/DCI | Concentración y forma | Cantidad | Dosis | Frecuencia | Duración | Horario",value=data.get('prescription',''),height=180)
             prescription_warnings=st.text_area("Indicaciones y advertencias",value=data.get('prescription_warnings',''))
+          if not extras: st.info("No se seleccionaron documentos adicionales para esta atención.")
         save=st.form_submit_button("Guardar borrador")
         final=st.form_submit_button("Finalizar y cerrar consulta",type="primary")
         if save or final:
@@ -550,7 +579,8 @@ def doctors_page():
 
 def users_page():
     st.title("Usuarios")
-    rows=db.users(UID); st.dataframe(pd.DataFrame(rows),hide_index=True)
+    a,b=st.columns([3,1]); query=a.text_input("Buscar por nombre o usuario"); include_inactive=b.checkbox("Mostrar retirados",value=False)
+    rows=db.users(UID,query,include_inactive); st.dataframe(pd.DataFrame(rows),hide_index=True)
     labels={'Nueva cuenta':None}|{f"{proper_name(r['name'])} · {r['username']}":r for r in rows}; selected=labels[st.selectbox("Cuenta",labels)]
     dm=doctor_map(); names=list(dm)
     with st.form('user_form'):
@@ -564,6 +594,9 @@ def users_page():
         if st.form_submit_button("Guardar cuenta",type="primary"):
             data={'username':username,'name':name,'role':role,'doctor_id':dm[dname]['id'] if role=='medico' and names else None,'active':active}
             run(lambda:db.save_user(UID,data,selected['id'] if selected else None,password or None),"Cuenta guardada.")
+    if selected:
+        confirm_user=st.checkbox("Confirmo que deseo eliminar esta cuenta",key='confirm_delete_user')
+        if st.button("Eliminar usuario",disabled=not confirm_user): run(lambda:db.delete_user(UID,selected['id']),"Usuario retirado.")
 
 def reports_page(full=False):
     st.title("Reportes y respaldo" if full else "Reportes")
@@ -579,8 +612,7 @@ def reports_page(full=False):
         'Médico':proper_name(r['doctor']),
         'Especialidad':str(r['specialty'] or '').capitalize(),
         'Estado':r['status'],
-        'Autorización':r.get('authorization_code') or '',
-        'Vencimiento':r.get('expires_on'),
+        'Fecha de validación':r.get('validation_date'),
         'Observaciones':r.get('notes') or ''
     } for r in rows]
     st.caption(f"Periodo: {first.strftime('%d/%m/%Y')} al {last.strftime('%d/%m/%Y')} · {len(report_rows)} cita(s)")
@@ -599,7 +631,7 @@ def reports_page(full=False):
             if prepared: st.session_state.backup_zip=prepared
         if st.session_state.get('backup_zip'):
             st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
-        st.caption("El respaldo recuperable contiene todas las tablas de la versión 4 y una huella de integridad.")
+        st.caption("El respaldo recuperable contiene todas las tablas de la versión 5 y una huella de integridad.")
 
 def admin_page():
     st.title("Administración")

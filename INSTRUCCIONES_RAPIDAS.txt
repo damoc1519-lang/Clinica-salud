@@ -13,6 +13,8 @@ MEDISUPORT V2 — PASOS RÁPIDOS
    la lista de pacientes sin cambiar los encabezados.
 9. Complete el documento y registro profesional de cada médico. En Historia
    clínica podrá descargar el expediente completo en Word, Excel y PDF.
+10. Cada médico puede actualizar su documento y registro desde la barra lateral.
+    Para ISSFA, configure el convenio para solicitar únicamente fecha de validación.
 
 Las tablas anteriores se conservan. La versión nueva trabaja dentro del esquema
 medisuport de Supabase.

@@ -1,4 +1,4 @@
--- Versión 4: esquema separado; no modifica ni elimina tablas public anteriores.
+-- Versión 5: esquema separado; no modifica ni elimina tablas public anteriores.
 CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA extensions;
 CREATE SCHEMA IF NOT EXISTS medisuport;
@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT INTO settings VALUES ('schema_version','2'),('consultation_rule','specialty')
  ON CONFLICT DO NOTHING;
-UPDATE settings SET value='4' WHERE key='schema_version';
+UPDATE settings SET value='5' WHERE key='schema_version';
 CREATE TABLE IF NOT EXISTS doctors (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  specialties TEXT[] NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS agreements (
  tax_id TEXT, contact_name TEXT, phone TEXT, email TEXT,
  start_date DATE, end_date DATE, notes TEXT,
  requires_authorization BOOLEAN NOT NULL DEFAULT FALSE,
+ requires_validation_date BOOLEAN NOT NULL DEFAULT FALSE,
  active BOOLEAN NOT NULL DEFAULT TRUE, version INT NOT NULL DEFAULT 1,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -87,6 +88,8 @@ CREATE TABLE IF NOT EXISTS appointments (
 );
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS agreement_id BIGINT REFERENCES agreements(id);
 ALTER TABLE agreements ADD COLUMN IF NOT EXISTS requires_authorization BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE agreements ADD COLUMN IF NOT EXISTS requires_validation_date BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS validation_date DATE;
 CREATE INDEX IF NOT EXISTS appointment_date_idx ON appointments(start_at);
 CREATE INDEX IF NOT EXISTS patient_agreement_idx ON patient_agreements(agreement_id,patient_id);
 CREATE TABLE IF NOT EXISTS encounters (
