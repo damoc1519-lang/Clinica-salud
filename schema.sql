@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT INTO settings VALUES ('schema_version','2'),('consultation_rule','specialty')
  ON CONFLICT DO NOTHING;
-UPDATE settings SET value='5' WHERE key='schema_version';
+UPDATE settings SET value='6' WHERE key='schema_version';
 CREATE TABLE IF NOT EXISTS doctors (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  specialties TEXT[] NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -106,6 +106,16 @@ CREATE TABLE IF NOT EXISTS amendments (
  author_id BIGINT NOT NULL REFERENCES users(id), reason TEXT NOT NULL, text TEXT NOT NULL,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS certificates (
+ id BIGSERIAL PRIMARY KEY, patient_id BIGINT NOT NULL REFERENCES patients(id),
+ doctor_id BIGINT NOT NULL REFERENCES doctors(id), issued_by BIGINT NOT NULL REFERENCES users(id),
+ institution TEXT NOT NULL, location TEXT NOT NULL, specialty TEXT,
+ diagnosis TEXT NOT NULL, cie10 TEXT, rest_from DATE, rest_to DATE,
+ observations TEXT, issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS certificate_patient_idx ON certificates(patient_id,issued_at DESC);
+CREATE INDEX IF NOT EXISTS certificate_doctor_idx ON certificates(doctor_id,issued_at DESC);
 CREATE TABLE IF NOT EXISTS audit (
  id BIGSERIAL PRIMARY KEY, actor_id BIGINT REFERENCES users(id), action TEXT NOT NULL,
  entity TEXT NOT NULL, entity_id TEXT, detail JSONB NOT NULL DEFAULT '{}',

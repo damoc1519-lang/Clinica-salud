@@ -7,8 +7,8 @@ import pandas as pd
 import streamlit as st
 from psycopg2.errors import ExclusionViolation, UniqueViolation
 
-from core import Database, AppError, TZ, WEEKDAYS, STATUSES, now, local_datetime, proper_name
-from exports import word_history, clinical_excel, clinical_pdf, excel
+from core import Database, AppError, TZ, WEEKDAYS, STATUSES, now, local_datetime, proper_name, normalize_doc
+from exports import word_history, clinical_excel, clinical_pdf, certificate_pdf, certificate_word, excel
 from legacy import preview as legacy_preview, import_legacy, issues as legacy_issues
 
 st.set_page_config(page_title="Medisuport", page_icon="🏥", layout="wide")
@@ -214,7 +214,7 @@ if user['must_change']:
 pages={
  'admin':['Inicio','Pacientes','Convenios','Agenda','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
  'secretaria':['Inicio','Pacientes','Convenios','Agenda','Médicos y horarios','Reportes'],
- 'medico':['Inicio','Mis citas','Historia clínica','Pacientes']
+ 'medico':['Inicio','Mis citas','Historia clínica','Certificados médicos','Pacientes']
 }[ROLE]
 # Los cambios de página solicitados por una acción se aplican al comienzo del
 # siguiente ciclo, antes de crear el widget de navegación.
@@ -641,6 +641,51 @@ def users_page():
         confirm_user=st.checkbox("Confirmo que deseo eliminar esta cuenta",key='confirm_delete_user')
         if st.button("Eliminar usuario",disabled=not confirm_user): run(lambda:db.delete_user(UID,selected['id']),"Usuario retirado.")
 
+def certificates_page():
+    st.title("Certificados médicos")
+    st.caption("Emita certificados numerados con los datos del paciente y su registro profesional.")
+    patient=patient_picker('certificate_patient')
+    if not patient: return
+    profile=next((d for d in db.doctors(UID,all_rows=True) if d['id']==DOCTOR),None)
+    if not profile or not profile.get('professional_id') or not profile.get('registration'):
+        st.warning('Antes de emitir un certificado, complete su documento y número de registro en “Mi información profesional”.')
+    with st.form('medical_certificate_form'):
+        a,b=st.columns(2)
+        institution=a.text_input("Establecimiento de salud *",value="Medisuport")
+        location=b.text_input("Lugar de emisión *",placeholder="Ej.: Quito")
+        specialties=(profile or {}).get('specialties') or ['Medicina general']
+        specialty=st.selectbox("Especialidad",specialties)
+        diagnosis=st.text_area("Diagnóstico o condición médica *")
+        cie10=st.text_input("Código CIE-10 (opcional)",max_chars=20)
+        needs_rest=st.checkbox("Requiere reposo médico")
+        c1,c2=st.columns(2)
+        rest_from=c1.date_input("Reposo desde",value=now().date(),disabled=not needs_rest,format='DD/MM/YYYY')
+        rest_to=c2.date_input("Reposo hasta",value=now().date(),disabled=not needs_rest,format='DD/MM/YYYY')
+        observations=st.text_area("Indicaciones u observaciones",placeholder="Tratamiento, restricciones o recomendaciones relevantes")
+        if st.form_submit_button("Emitir certificado",type="primary"):
+            data={'institution':institution,'location':location,'specialty':specialty,'diagnosis':diagnosis,'cie10':cie10,
+                  'rest_from':rest_from if needs_rest else None,'rest_to':rest_to if needs_rest else None,'observations':observations}
+            created=run(lambda:db.create_certificate(UID,patient['id'],data),rerun=False)
+            if created:
+                st.session_state.last_certificate=created
+                st.success("Certificado emitido y registrado correctamente.")
+    current=st.session_state.get('last_certificate')
+    if current and current.get('patient_id')==patient['id']:
+        number=f"CM-{current['issued_at'].astimezone(TZ).year}-{int(current['id']):06d}"
+        st.subheader(f"Certificado {number}")
+        c1,c2=st.columns(2)
+        c1.download_button("Descargar certificado PDF",certificate_pdf(current),f"{number}_{normalize_doc(current['patient'])}.pdf","application/pdf")
+        c2.download_button("Descargar certificado Word",certificate_word(current),f"{number}_{normalize_doc(current['patient'])}.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    previous=db.certificates(UID,patient['id'])
+    if previous:
+        st.subheader("Certificados anteriores")
+        labels={f"CM-{r['issued_at'].astimezone(TZ).year}-{int(r['id']):06d} · {r['issued_at'].astimezone(TZ).strftime('%d/%m/%Y %H:%M')} · {r['diagnosis'][:55]}":r for r in previous}
+        selected=labels[st.selectbox("Seleccione un certificado",labels,key='previous_certificate')]
+        number=f"CM-{selected['issued_at'].astimezone(TZ).year}-{int(selected['id']):06d}"
+        a,b=st.columns(2)
+        a.download_button("Descargar PDF nuevamente",certificate_pdf(selected),f"{number}.pdf","application/pdf",key='old_cert_pdf')
+        b.download_button("Descargar Word nuevamente",certificate_word(selected),f"{number}.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document",key='old_cert_word')
+
 def reports_page(full=False):
     st.title("Reportes y respaldo" if full else "Reportes")
     first,last=st.date_input("Periodo del reporte",value=(now().date().replace(day=1),now().date()),format='DD/MM/YYYY',key='report_dates')
@@ -674,7 +719,7 @@ def reports_page(full=False):
             if prepared: st.session_state.backup_zip=prepared
         if st.session_state.get('backup_zip'):
             st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
-        st.caption("El respaldo recuperable contiene todas las tablas de la versión 5 y una huella de integridad.")
+        st.caption("El respaldo recuperable contiene todas las tablas de la versión 6 y una huella de integridad.")
 
 def admin_page():
     st.title("Administración")
@@ -696,5 +741,5 @@ def admin_page():
 
 try:
     {'Inicio':dashboard,'Pacientes':patients_page,'Convenios':agreements_page,'Agenda':agenda_page,'Mis citas':lambda:agenda_page(True),'Historia clínica':history_page,
-     'Médicos y horarios':doctors_page,'Usuarios':users_page,'Reportes':reports_page,'Reportes y respaldo':lambda:reports_page(True),'Administración':admin_page}[page]()
+     'Certificados médicos':certificates_page,'Médicos y horarios':doctors_page,'Usuarios':users_page,'Reportes':reports_page,'Reportes y respaldo':lambda:reports_page(True),'Administración':admin_page}[page]()
 except Exception as exc: fail(exc)

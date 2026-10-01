@@ -15,7 +15,7 @@ TZ = ZoneInfo('America/Guayaquil')
 STATUSES = ['Pendiente','Confirmada','Llegó','En atención','Atendida','Cancelada','No asistió']
 INACTIVE = ['Cancelada','No asistió']
 WEEKDAYS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
-BACKUP_TABLES = ['settings','doctors','users','patients','agreements','patient_agreements','availability','blocks','appointments','encounters','amendments','audit','legacy_archive']
+BACKUP_TABLES = ['settings','doctors','users','patients','agreements','patient_agreements','availability','blocks','appointments','encounters','amendments','certificates','audit','legacy_archive']
 class AppError(Exception): pass
 
 def now(): return datetime.now(TZ)
@@ -509,6 +509,36 @@ class Database:
             for row in rows:
                 c.execute('SELECT m.*,u.name AS author FROM amendments m JOIN users u ON u.id=m.author_id WHERE encounter_id=%s ORDER BY m.created_at',(row['id'],)); row['amendments']=c.fetchall()
             self.audit(c,a,'consultar_historial','patients',pid); return rows
+    def create_certificate(self,uid,pid,data):
+        institution=clean(data.get('institution')); location=clean(data.get('location'))
+        specialty=clean(data.get('specialty')); diagnosis=clean(data.get('diagnosis'))
+        cie10=clean(data.get('cie10')).upper(); observations=clean(data.get('observations'))
+        rest_from=parse_date(data.get('rest_from')); rest_to=parse_date(data.get('rest_to'))
+        if not institution or not location or not diagnosis: raise AppError('Complete establecimiento, lugar y diagnóstico.')
+        if (rest_from and not rest_to) or (rest_to and not rest_from): raise AppError('Complete las dos fechas del reposo médico.')
+        if rest_from and rest_to and rest_to<rest_from: raise AppError('La fecha final del reposo no puede ser anterior a la inicial.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['medico']); self.patient_scope(c,a,pid,True)
+            c.execute('SELECT * FROM doctors WHERE id=%s AND active',(a['doctor_id'],)); doctor=c.fetchone()
+            if not doctor or not clean(doctor.get('professional_id')) or not clean(doctor.get('registration')):
+                raise AppError('Complete primero su documento y número de registro en “Mi información profesional”.')
+            c.execute('''INSERT INTO certificates(patient_id,doctor_id,issued_by,institution,location,specialty,diagnosis,cie10,rest_from,rest_to,observations)
+                         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
+                      (pid,a['doctor_id'],uid,institution,location,specialty,diagnosis,cie10,rest_from,rest_to,observations))
+            certificate_id=c.fetchone()['id']; self.audit(c,a,'emitir_certificado','certificates',certificate_id,{'paciente':pid})
+            c.execute('''SELECT c.*,p.name AS patient,p.document,p.birth_date,d.name AS doctor,d.professional_id,d.registration
+                         FROM certificates c JOIN patients p ON p.id=c.patient_id JOIN doctors d ON d.id=c.doctor_id WHERE c.id=%s''',(certificate_id,))
+            return c.fetchone()
+    def certificates(self,uid,pid=None):
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin','medico'])
+            args=[]; where=[]
+            if pid is not None: self.patient_scope(c,a,pid,True); where.append('c.patient_id=%s'); args.append(pid)
+            if a['role']=='medico': where.append('c.doctor_id=%s'); args.append(a['doctor_id'])
+            clause=(' WHERE '+' AND '.join(where)) if where else ''
+            c.execute('''SELECT c.*,p.name AS patient,p.document,p.birth_date,d.name AS doctor,d.professional_id,d.registration
+                         FROM certificates c JOIN patients p ON p.id=c.patient_id JOIN doctors d ON d.id=c.doctor_id'''+clause+' ORDER BY c.issued_at DESC LIMIT 200',args)
+            return c.fetchall()
     def amend(self,uid,eid,reason,text):
         if not clean(reason) or not clean(text): raise AppError('Complete el motivo y el texto de la corrección.')
         with self.tx() as c:
@@ -536,7 +566,7 @@ class Database:
             payload={}
             for table in BACKUP_TABLES:
                 c.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(table))); payload[table]=[dict(r) for r in c.fetchall()]
-        raw=json.dumps({'version':5,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
+        raw=json.dumps({'version':6,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
         out=io.BytesIO()
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
             z.writestr('datos.json',raw); z.writestr('sha256.txt',hashlib.sha256(raw).hexdigest())
@@ -547,7 +577,7 @@ class Database:
             raw=z.read('datos.json')
             if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(),z.read('sha256.txt').decode().strip()): raise AppError('El respaldo está dañado.')
         data=json.loads(raw)
-        if data.get('version')!=5 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
+        if data.get('version')!=6 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
         with self.tx() as c:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
             for table in BACKUP_TABLES:

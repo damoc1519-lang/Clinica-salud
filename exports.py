@@ -108,6 +108,58 @@ def word_history(patient,histories):
             d.add_paragraph(f"{pretty(a['created_at'])} · {proper_name(a['author'])}\nMotivo: {a['reason']}\n{a['text']}")
     if not any(h['status']=='Finalizada' for h in histories): d.add_paragraph('No hay consultas finalizadas.')
     out=io.BytesIO(); d.save(out); return out.getvalue()
+
+def _certificate_age(birth,issued):
+    if not birth: return None
+    day=issued.date() if isinstance(issued,datetime) else issued
+    return day.year-birth.year-((day.month,day.day)<(birth.month,birth.day))
+
+def certificate_pdf(c):
+    out=io.BytesIO(); doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=2.1*cm,leftMargin=2.1*cm,topMargin=1.7*cm,bottomMargin=1.6*cm)
+    styles=getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='CertHead',parent=styles['Title'],fontName='Helvetica-Bold',fontSize=16,textColor=colors.HexColor('#0F4C5C'),alignment=TA_CENTER,spaceAfter=4))
+    styles.add(ParagraphStyle(name='CertSub',parent=styles['Normal'],fontName='Helvetica-Bold',fontSize=10,textColor=colors.HexColor('#147D92'),alignment=TA_CENTER,spaceAfter=18))
+    body=ParagraphStyle(name='CertBody',parent=styles['BodyText'],fontName='Helvetica',fontSize=11,leading=18,alignment=0)
+    issued=c['issued_at'].astimezone(TZ); age=_certificate_age(c.get('birth_date'),issued)
+    number=f"CM-{issued.year}-{int(c['id']):06d}"
+    patient=proper_name(c.get('patient')); doctor=proper_name(c.get('doctor'))
+    rest=''
+    if c.get('rest_from') and c.get('rest_to'):
+        days=(c['rest_to']-c['rest_from']).days+1
+        rest=f"Se recomienda reposo médico desde el <b>{pretty(c['rest_from'])}</b> hasta el <b>{pretty(c['rest_to'])}</b>, por un total de <b>{days} día(s)</b>."
+    story=[Paragraph(escape(c.get('institution') or 'Establecimiento de salud'),styles['CertHead']),Paragraph('CERTIFICADO MÉDICO',styles['CertSub']),
+           Paragraph(f"<b>Certificado N.º:</b> {number}",body),Spacer(1,10),
+           Paragraph(f"Yo, <b>{escape(doctor)}</b>, certifico que el/la paciente <b>{escape(patient)}</b>, identificado(a) con documento <b>{escape(str(c.get('document') or ''))}</b>{(' de <b>'+str(age)+' años</b>') if age is not None else ''}, fue valorado(a) el <b>{issued.strftime('%d/%m/%Y')}</b>.",body),Spacer(1,8),
+           Paragraph(f"<b>Diagnóstico:</b> {escape(c.get('diagnosis') or '')}",body)]
+    if c.get('cie10'): story.append(Paragraph(f"<b>Código CIE-10:</b> {escape(c['cie10'])}",body))
+    if rest: story += [Spacer(1,8),Paragraph(rest,body)]
+    if c.get('observations'): story += [Spacer(1,8),Paragraph(f"<b>Indicaciones u observaciones:</b> {escape(c['observations']).replace(chr(10),'<br/>')}",body)]
+    story += [Spacer(1,14),Paragraph('Se emite el presente certificado a petición del interesado para los fines que estime pertinentes.',body),Spacer(1,12),Paragraph(f"{escape(c.get('location') or '')}, {issued.strftime('%d de %m de %Y')}",body),Spacer(1,55),Paragraph('________________________________________',body),Paragraph(f"<b>{escape(doctor)}</b><br/>{escape(c.get('specialty') or '')}<br/>Documento profesional: {escape(str(c.get('professional_id') or ''))}<br/>Registro profesional: {escape(str(c.get('registration') or ''))}<br/>Firma y sello",body)]
+    def footer(canvas,doc):
+        canvas.saveState(); canvas.setStrokeColor(colors.HexColor('#147D92')); canvas.line(2.1*cm,1.15*cm,18.9*cm,1.15*cm); canvas.setFont('Helvetica',7); canvas.setFillColor(colors.HexColor('#506670')); canvas.drawString(2.1*cm,.8*cm,'Documento clínico generado por Medisuport'); canvas.drawRightString(18.9*cm,.8*cm,number); canvas.restoreState()
+    doc.build(story,onFirstPage=footer,onLaterPages=footer); return out.getvalue()
+
+def certificate_word(c):
+    d=Document(); normal=d.styles['Normal']; normal.font.name='Arial'; normal.font.size=Pt(11)
+    for section in d.sections:
+        section.left_margin=section.right_margin=Inches(.85)
+        section.footer.paragraphs[0].text=f"Medisuport · Certificado CM-{c['issued_at'].astimezone(TZ).year}-{int(c['id']):06d}"
+    issued=c['issued_at'].astimezone(TZ); age=_certificate_age(c.get('birth_date'),issued); doctor=proper_name(c.get('doctor')); patient=proper_name(c.get('patient'))
+    p=d.add_paragraph(); p.alignment=1; r=p.add_run(c.get('institution') or 'Establecimiento de salud'); r.bold=True; r.font.size=Pt(16); r.font.color.rgb=RGBColor(15,76,92)
+    p=d.add_paragraph(); p.alignment=1; r=p.add_run('CERTIFICADO MÉDICO'); r.bold=True; r.font.size=Pt(14)
+    d.add_paragraph(f"Certificado N.º CM-{issued.year}-{int(c['id']):06d}")
+    text=f"Yo, {doctor}, certifico que el/la paciente {patient}, identificado(a) con documento {c.get('document') or ''}"
+    if age is not None: text+=f", de {age} años"
+    text+=f", fue valorado(a) el {issued.strftime('%d/%m/%Y')}."
+    d.add_paragraph(text); d.add_paragraph(f"Diagnóstico: {c.get('diagnosis') or ''}")
+    if c.get('cie10'): d.add_paragraph(f"Código CIE-10: {c['cie10']}")
+    if c.get('rest_from') and c.get('rest_to'):
+        days=(c['rest_to']-c['rest_from']).days+1; d.add_paragraph(f"Se recomienda reposo médico desde el {pretty(c['rest_from'])} hasta el {pretty(c['rest_to'])}, por un total de {days} día(s).")
+    if c.get('observations'): d.add_paragraph(f"Indicaciones u observaciones: {c['observations']}")
+    d.add_paragraph('Se emite el presente certificado a petición del interesado para los fines que estime pertinentes.')
+    d.add_paragraph(f"{c.get('location') or ''}, {issued.strftime('%d/%m/%Y')}"); d.add_paragraph('\n\n________________________________________')
+    d.add_paragraph(f"{doctor}\n{c.get('specialty') or ''}\nDocumento profesional: {c.get('professional_id') or ''}\nRegistro profesional: {c.get('registration') or ''}\nFirma y sello")
+    out=io.BytesIO(); d.save(out); return out.getvalue()
 def excel(sheets):
     out=io.BytesIO()
     with pd.ExcelWriter(out,engine='openpyxl') as writer:
