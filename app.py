@@ -1,5 +1,6 @@
 """Medisuport v2 — interfaz Streamlit."""
 from datetime import date, datetime, time, timedelta
+from calendar import monthrange
 from pathlib import Path
 import io, json, logging, traceback, re, unicodedata
 import pandas as pd
@@ -96,6 +97,23 @@ button[kind="primary"]:hover{color:white!important;box-shadow:0 8px 20px rgba(15
 }
 [data-testid="stSidebar"] div[data-testid="stExpander"] summary,
 [data-testid="stSidebar"] div[data-testid="stExpander"] summary *{color:#f4fbfc!important}
+/* Los formularios dentro del menú lateral usan una tarjeta oscura. Los
+   campos conservan fondo claro y texto oscuro para que siempre sean legibles. */
+[data-testid="stSidebar"] [data-testid="stForm"]{
+  background:rgba(255,255,255,.07)!important;
+  border:1px solid rgba(255,255,255,.20)!important;
+  box-shadow:none!important;
+}
+[data-testid="stSidebar"] [data-baseweb="input"] input,
+[data-testid="stSidebar"] [data-baseweb="textarea"] textarea{
+  color:#17313a!important;
+  -webkit-text-fill-color:#17313a!important;
+}
+[data-testid="stSidebar"] [data-baseweb="input"] input::placeholder,
+[data-testid="stSidebar"] [data-baseweb="textarea"] textarea::placeholder{
+  color:#71878f!important;
+  -webkit-text-fill-color:#71878f!important;
+}
 .stTabs [data-baseweb="tab-list"]{
   gap:.35rem;background:#e9f1f4;padding:.35rem;border-radius:12px;
 }
@@ -259,7 +277,20 @@ def patient_form(existing=None):
             document=st.text_input("Documento *",value=e.get('document',''),disabled=bool(existing))
             name=st.text_input("Nombre completo *",value=e.get('name',''))
             sex=st.selectbox("Sexo",['','Femenino','Masculino','Otro'],index=['','Femenino','Masculino','Otro'].index(e.get('sex') or '') if (e.get('sex') or '') in ['','Femenino','Masculino','Otro'] else 0)
-            birth=st.date_input("Fecha de nacimiento",value=e.get('birth_date'),min_value=date(1900,1,1),max_value=now().date(),format='DD/MM/YYYY')
+            st.markdown("**Fecha de nacimiento**")
+            saved_birth=e.get('birth_date')
+            birth_key=f"birth_{e.get('id', 'new')}"
+            birth_years=['Sin registrar']+list(range(now().year,1899,-1))
+            by=birth_years.index(saved_birth.year) if saved_birth else 0
+            yc,mc,dc=st.columns(3)
+            year_value=yc.selectbox("Año",birth_years,index=by,key=birth_key+'_year')
+            month_value=mc.selectbox("Mes",list(range(1,13)),index=(saved_birth.month-1 if saved_birth else 0),
+                                     disabled=year_value=='Sin registrar',key=birth_key+'_month')
+            max_day=monthrange(int(year_value),month_value)[1] if year_value!='Sin registrar' else 31
+            saved_day=min(saved_birth.day,max_day) if saved_birth else 1
+            day_value=dc.selectbox("Día",list(range(1,max_day+1)),index=saved_day-1,
+                                   disabled=year_value=='Sin registrar',key=birth_key+'_day')
+            birth=None if year_value=='Sin registrar' else date(int(year_value),month_value,day_value)
             phone=st.text_input("Teléfono",value=e.get('phone') or '')
         with b:
             email=st.text_input("Correo",value=e.get('email') or '')
@@ -301,6 +332,15 @@ def patients_page():
                 st.warning(f"Motivo: {p['archive_reason'] or 'No registrado'}")
                 reason=st.text_input("Motivo de reactivación")
                 if st.button("Reactivar"): run(lambda:db.archive_patient(UID,p['id'],reason,True),"Paciente reactivado.")
+                if ROLE=='admin':
+                    with st.expander("Eliminar paciente definitivamente"):
+                        st.error("Esta acción no se puede deshacer. Solo estará permitida si el paciente no tiene citas ni historias clínicas.")
+                        confirm_delete=st.checkbox(
+                            f"Confirmo que deseo eliminar a {proper_name(p['name'])}",
+                            key=f"confirm_delete_patient_{p['id']}"
+                        )
+                        if st.button("Eliminar definitivamente",disabled=not confirm_delete,key=f"delete_patient_{p['id']}"):
+                            run(lambda:db.delete_patient(UID,p['id']),"Paciente eliminado definitivamente.")
             else: st.info("No hay pacientes archivados.")
 
 IMPORT_COLUMNS={'cedula','nombres_completos','sexo','fecha_nacimiento','telefono','correo','direccion','ocupacion','numero_afiliado'}

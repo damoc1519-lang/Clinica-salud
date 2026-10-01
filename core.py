@@ -117,19 +117,27 @@ class Database:
         self.config=config or load_config()
         self.pool=ThreadedConnectionPool(1,8,**self.config)
     @contextmanager
-    def tx(self):
+    def tx(self, isolation_level=None):
         conn=self.pool.getconn()
         try:
             if conn.closed:
                 self.pool.putconn(conn,close=True); conn=self.pool.getconn()
             conn.rollback()
             with conn.cursor() as check: check.execute('SELECT 1')
+            # La consulta de salud abre una transacción. Debe cerrarse antes de
+            # configurar REPEATABLE READ para operaciones como los respaldos.
+            conn.rollback()
         except (psycopg2.InterfaceError,psycopg2.OperationalError):
             self.pool.putconn(conn,close=True); conn=self.pool.getconn()
         try:
+            if isolation_level:
+                conn.set_session(isolation_level=isolation_level)
             with conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur: yield cur
-        finally: self.pool.putconn(conn,close=bool(conn.closed))
+        finally:
+            if not conn.closed and isolation_level:
+                conn.set_session(isolation_level='READ COMMITTED')
+            self.pool.putconn(conn,close=bool(conn.closed))
     def initialize(self):
         with self.tx() as c:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
@@ -357,6 +365,23 @@ class Database:
                 if c.fetchone()['n']: raise AppError('Reagende o cancele las citas futuras antes de archivar.')
             c.execute('UPDATE patients SET active=%s,archive_reason=%s,version=version+1,updated_at=now() WHERE id=%s',(active,reason,pid))
             self.audit(c,a,'reactivar' if active else 'archivar','patients',pid,{'motivo':reason})
+    def delete_patient(self,uid,pid):
+        """Elimina un paciente archivado sin destruir información clínica."""
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin'])
+            c.execute('SELECT id,name,document,active FROM patients WHERE id=%s FOR UPDATE',(pid,)); patient=c.fetchone()
+            if not patient: raise AppError('El paciente ya no existe.')
+            if patient['active']: raise AppError('Primero debe archivar al paciente antes de eliminarlo.')
+            c.execute('''SELECT
+                         EXISTS(SELECT 1 FROM appointments WHERE patient_id=%s) AS has_appointments,
+                         EXISTS(SELECT 1 FROM encounters WHERE patient_id=%s) AS has_histories''',(pid,pid))
+            related=c.fetchone()
+            if related['has_appointments'] or related['has_histories']:
+                raise AppError('No se puede eliminar porque posee citas o historias clínicas. Debe conservarse archivado para proteger el expediente médico.')
+            c.execute('DELETE FROM patient_agreements WHERE patient_id=%s',(pid,))
+            c.execute('DELETE FROM patients WHERE id=%s',(pid,))
+            self.audit(c,a,'eliminar_paciente','patients',pid,{'documento':patient['document'],'nombre':patient['name']})
+            return 'Paciente eliminado definitivamente.'
     def schedules(self,uid,did):
         with self.tx() as c:
             self.actor(c,uid); c.execute('SELECT * FROM availability WHERE doctor_id=%s ORDER BY weekday,start_time',(did,)); rules=c.fetchall()
@@ -506,8 +531,7 @@ class Database:
         with self.tx() as c:
             self.actor(c,uid,['admin']); c.execute('SELECT a.created_at,u.name AS usuario,a.action,a.entity,a.entity_id,a.detail FROM audit a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.id DESC LIMIT 500'); return c.fetchall()
     def backup(self,uid):
-        with self.tx() as c:
-            c.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+        with self.tx('REPEATABLE READ') as c:
             a=self.actor(c,uid,['admin']); self.audit(c,a,'respaldo','database')
             payload={}
             for table in BACKUP_TABLES:
