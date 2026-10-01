@@ -432,9 +432,12 @@ def booking_form(existing=None):
     slots=db.available_slots(UID,d['id'],p['id'],day,duration,existing['id'] if existing else None)
     if not slots: st.warning("No hay turnos libres para esa fecha y duración."); return
     labels={x.strftime('%H:%M'):x for x in slots}; selected=st.selectbox("Hora disponible",labels,key='bt'+str(existing and existing['id']))
-    linked=db.patient_agreements(UID,p['id'])
-    options={'Particular':None}|{a['name']:a for a in linked}
-    current=next((name for name,a in options.items() if a and existing and a['id']==existing.get('agreement_id')),'Particular')
+    # La recepción puede seleccionar cualquier convenio activo. Al guardar la
+    # cita, el backend vincula automáticamente al paciente con ese convenio.
+    available_agreements=db.agreements(UID,active_only=True)
+    options={'Particular':None}|{a['name']:a for a in available_agreements}
+    patient_default=next((name for name,a in options.items() if a and str(p.get('coverage') or '').lower()==name.lower()),'Particular')
+    current=next((name for name,a in options.items() if a and existing and a['id']==existing.get('agreement_id')),patient_default)
     agreement_name=st.selectbox("Facturación / convenio",list(options),index=list(options).index(current),key='bc'+str(existing and existing['id']))
     agreement=options[agreement_name]; needs_validation=bool(agreement and agreement['requires_validation_date'])
     validation_date=st.date_input("Fecha de validación del convenio",value=existing.get('validation_date') if existing and existing.get('validation_date') else None,disabled=not agreement,format='DD/MM/YYYY',key='bv'+str(existing and existing['id']))

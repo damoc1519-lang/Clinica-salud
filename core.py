@@ -417,9 +417,10 @@ class Database:
             if specialty not in d['specialties']: raise AppError('La especialidad no corresponde al médico.')
             agreement=None
             if agreement_id:
-                c.execute('''SELECT a.* FROM patient_agreements pa JOIN agreements a ON a.id=pa.agreement_id
-                             WHERE pa.patient_id=%s AND pa.agreement_id=%s AND pa.active AND a.active''',(pid,agreement_id)); agreement=c.fetchone()
-                if not agreement: raise AppError('El paciente no está afiliado a ese convenio activo.')
+                c.execute('SELECT * FROM agreements WHERE id=%s AND active',(agreement_id,)); agreement=c.fetchone()
+                if not agreement: raise AppError('El convenio seleccionado no existe o está inactivo.')
+                c.execute('''INSERT INTO patient_agreements(patient_id,agreement_id,active) VALUES(%s,%s,TRUE)
+                             ON CONFLICT(patient_id,agreement_id) DO UPDATE SET active=TRUE''',(pid,agreement_id))
             if agreement and agreement['requires_validation_date'] and not validation_date: raise AppError('Ingrese la fecha de validación del convenio.')
             if not agreement: validation_date=None
             c.execute('SELECT * FROM availability WHERE doctor_id=%s',(did,)); rules=c.fetchall()
