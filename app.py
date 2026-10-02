@@ -288,20 +288,9 @@ def patient_form(existing=None):
             document=st.text_input("Documento *",value=e.get('document',''),disabled=bool(existing))
             name=st.text_input("Nombre completo *",value=e.get('name',''))
             sex=st.selectbox("Sexo",['','Femenino','Masculino','Otro'],index=['','Femenino','Masculino','Otro'].index(e.get('sex') or '') if (e.get('sex') or '') in ['','Femenino','Masculino','Otro'] else 0)
-            st.markdown("**Fecha de nacimiento**")
-            saved_birth=e.get('birth_date')
-            birth_key=f"birth_{e.get('id', 'new')}"
-            birth_years=['Sin registrar']+list(range(now().year,1899,-1))
-            by=birth_years.index(saved_birth.year) if saved_birth else 0
-            yc,mc,dc=st.columns(3)
-            year_value=yc.selectbox("Año",birth_years,index=by,key=birth_key+'_year')
-            month_value=mc.selectbox("Mes",list(range(1,13)),index=(saved_birth.month-1 if saved_birth else 0),
-                                     disabled=year_value=='Sin registrar',key=birth_key+'_month')
-            max_day=monthrange(int(year_value),month_value)[1] if year_value!='Sin registrar' else 31
-            saved_day=min(saved_birth.day,max_day) if saved_birth else 1
-            day_value=dc.selectbox("Día",list(range(1,max_day+1)),index=saved_day-1,
-                                   disabled=year_value=='Sin registrar',key=birth_key+'_day')
-            birth=None if year_value=='Sin registrar' else date(int(year_value),month_value,day_value)
+            birth=st.date_input("Fecha de nacimiento",value=e.get('birth_date'),min_value=date(1900,1,1),
+                                max_value=now().date(),format='DD/MM/YYYY',key=f"birth_{e.get('id', 'new')}",
+                                help="Puede escribirla (DD/MM/AAAA) o elegirla en el calendario. Déjela vacía si no se conoce.")
             phone=st.text_input("Teléfono",value=e.get('phone') or '')
         with b:
             email=st.text_input("Correo",value=e.get('email') or '')
