@@ -1,5 +1,8 @@
 """Documentos Word y reportes Excel bajo los permisos del backend."""
 import io
+import re
+import unicodedata
+from pathlib import Path
 from html import escape
 from datetime import datetime,date,time
 from decimal import Decimal
@@ -7,7 +10,7 @@ import pandas as pd
 from docx import Document
 from docx.shared import Inches,Pt,RGBColor
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -41,28 +44,417 @@ def _encounter_rows(data):
         rows=[(label,pretty(data.get(key))) for key,label in fields]
         if any(data.get(key) not in (None,'',[],False,0,0.0) for key,_ in fields): yield title,rows
 
+
+# Plantilla oficial SNS-MSP / HCU utilizada por el convenio.
+ISSFA_TEMPLATE = Path(__file__).parent / 'templates' / 'HISTORIA_CLINICA_ISSFA.xlsx'
+OFFICIAL_SHEETS = ['HC','INTER007','REF053','LAB010','IMA012','RECETA']
+UNICODIGO = 56398
+ESTABLECIMIENTO = 'MEDISUPORT / QMC'
+
+def _norm_text(value):
+    if value is None:
+        return ''
+    text = str(value).upper()
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(ch for ch in text if unicodedata.category(ch) != 'Mn')
+    text = re.sub(r'[\r\n]+', ' ', text)
+    text = re.sub(r'[^A-Z0-9 ]+', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+def _patient_parts(name):
+    """El formulario oficial separa apellidos y nombres.
+    La app conserva actualmente un único campo de nombre; se interpreta
+    en el orden habitual de la carga histórica: apellido1 apellido2 nombre1 nombre2.
+    """
+    words=proper_name(name).split()
+    if len(words)>=4:
+        return words[0],words[1],words[2],' '.join(words[3:])
+    if len(words)==3:
+        return words[0],words[1],words[2],''
+    if len(words)==2:
+        return words[0],'',words[1],''
+    return (words[0] if words else '', '', '', '')
+
+def _doctor_parts(name):
+    words=proper_name(name).split()
+    if len(words)>=3:
+        return words[0],words[-2],words[-1]
+    if len(words)==2:
+        return words[0],words[1],''
+    return (words[0] if words else '', '', '')
+
+def _system_institution(patient):
+    coverage=_norm_text(patient.get('coverage'))
+    if 'ISSFA' in coverage:
+        return 'ISSFA'
+    if coverage:
+        return coverage[:40]
+    return 'PRIVADO'
+
+def _write_merged(ws, coord, value):
+    # Escribe siempre en la esquina superior izquierda de una celda combinada.
+    ws[coord] = value if value not in (None, '') else ''
+
+def _clear_cells(ws, coords):
+    for coord in coords:
+        ws[coord]=''
+
+def _fill_diagnoses(ws, diagnoses, principal=''):
+    parsed=[]
+    for item in diagnoses or []:
+        parts=[p.strip() for p in str(item).split('|')]
+        if len(parts)>=3:
+            cie,kind,desc=parts[0],parts[1], ' | '.join(parts[2:]).strip()
+        elif len(parts)==2:
+            cie,desc=parts[0],parts[1]
+            kind=''
+        else:
+            cie,kind,desc='','',parts[0]
+        if desc or cie:
+            parsed.append((desc,cie,kind))
+    if not parsed and principal:
+        parsed=[(str(principal).strip(),'','Definitivo')]
+    elif parsed and principal and not any(_norm_text(principal) in _norm_text(x[0]) or _norm_text(x[0]) in _norm_text(principal) for x in parsed):
+        # Mantener el diagnóstico principal como primera fila cuando existe.
+        parsed.insert(0,(str(principal).strip(),'','Definitivo'))
+    parsed=parsed[:6]
+
+    left=[(47,48,49),(None,None,None)]
+    slots=[(47,'B','Y','AC','AE'),(48,'B','Y','AC','AE'),(49,'B','Y','AC','AE'),
+           (47,'AH','BE','BI','BK'),(48,'AH','BE','BI','BK'),(49,'AH','BE','BI','BK')]
+    for i,(_,desc,cie,kind) in enumerate([(i,*parsed[i]) for i in range(len(parsed))]):
+        row,b,ciecol,precol,defcol=slots[i]
+        ws[f'{b}{row}']=desc
+        ws[f'{ciecol}{row}']=cie
+        ws[f'{precol}{row}']='X' if _norm_text(kind).startswith('PRE') else ''
+        ws[f'{defcol}{row}']='X' if _norm_text(kind).startswith('DEF') else ''
+
+def _fill_hc(ws, patient, h):
+    data=h.get('data') or {}
+    occurred=h.get('occurred_at')
+    if occurred and occurred.tzinfo:
+        occurred=occurred.astimezone(TZ)
+
+    s1,s2,n1,n2=_patient_parts(patient.get('name'))
+    d1,ds1,ds2=_doctor_parts(h.get('doctor'))
+    # Cabecera del formulario oficial.
+    ws['A3']=_system_institution(patient)
+    ws['N3']=UNICODIGO
+    ws['T3']=ESTABLECIMIENTO
+    ws['AH3']=patient.get('document') or ''
+    ws['AZ3']=patient.get('birth_date')
+    ws['BJ3']=1
+    ws['A5']=s1; ws['O5']=s2; ws['AC5']=n1; ws['AQ5']=n2
+    ws['BE5']=patient.get('sex') or ''
+    ws['A8']=patient.get('phone') or ''
+    # La app guarda dirección como un solo campo; se conserva en la parroquia
+    # para no perder información en el formulario oficial.
+    ws['O8']=''
+    ws['AH8']=''
+    ws['BA8']=patient.get('address') or ''
+
+    # Motivo y antecedentes.
+    ws['A11']=data.get('motivo') or ''
+    personal=set(_norm_text(x) for x in data.get('personal_conditions',[]))
+    family=set(_norm_text(x) for x in data.get('family_conditions',[]))
+    personal_cells={
+        'CARDIOPATÍA':'BK14','HIPERTENSIÓN':'BK14','ENFERMEDAD CEREBROVASCULAR':'BK14',
+    }
+    # Cada casilla oficial está al final del bloque correspondiente.
+    condition_slots={
+        'CARDIOPATÍA':'G14','HIPERTENSIÓN':'N14','ENFERMEDAD CEREBROVASCULAR':'T14',
+        'ENDÓCRINO-METABÓLICA':'AA14','CÁNCER':'AG14','TUBERCULOSIS':'AO14',
+        'ENFERMEDAD MENTAL':'AT14','ENFERMEDAD INFECCIOSA':'AZ14','MALFORMACIÓN':'BF14','OTRA':'BK14'
+    }
+    # Las casillas se encuentran en la última columna de cada bloque.
+    condition_checkbox={
+        'CARDIOPATÍA':'G14','HIPERTENSIÓN':'N14','ENFERMEDAD CEREBROVASCULAR':'T14',
+        'ENDÓCRINO-METABÓLICA':'AG14','CÁNCER':'AG14','TUBERCULOSIS':'AO14',
+        'ENFERMEDAD MENTAL':'AT14','ENFERMEDAD INFECCIOSA':'AZ14','MALFORMACIÓN':'BF14','OTRA':'BK14'
+    }
+    # Ajuste por la geometría real de la plantilla: las casillas son las celdas
+    # inmediatamente posteriores a cada etiqueta.
+    personal_check=['F14','M14','S14','Z14','AF14','AN14','AS14','AY14','BE14','BK14']
+    family_check=['F18','M18','S18','Z18','AF18','AN18','AS18','AY18','BE18','BK18']
+    for c in personal_check+family_check: ws[c]=''
+    condition_order=['CARDIOPATÍA','HIPERTENSIÓN','ENFERMEDAD CEREBROVASCULAR','ENDÓCRINO-METABÓLICA','CÁNCER','TUBERCULOSIS','ENFERMEDAD MENTAL','ENFERMEDAD INFECCIOSA','MALFORMACIÓN','OTRA']
+    for idx,label in enumerate(condition_order):
+        aliases={label}
+        if label=='ENFERMEDAD CEREBROVASCULAR': aliases.add('ENFERMEDAD CEREBROVASCULAR')
+        if label=='ENDÓCRINO-METABÓLICA': aliases.add('ENDÓCRINO METABÓLICA')
+        if label=='MALFORMACIÓN': aliases.add('MALFORMACION')
+        if any(a in personal for a in aliases): ws[personal_check[idx]]='X'
+        if any(a in family for a in aliases): ws[family_check[idx]]='X'
+    ws['A16']=data.get('personal_details') or ''
+    ws['A19']=data.get('family_details') or ''
+    ws['A24']=data.get('enfermedad_actual') or ''
+
+    # Constantes.
+    if occurred:
+        ws['A27']=occurred.date()
+        ws['F27']=occurred.time().replace(second=0,microsecond=0)
+    vals={
+        'K27':data.get('temperatura'),'O27':data.get('pa'),'T27':data.get('fc'),
+        'Y27':data.get('fr'),'AD27':data.get('peso'),'AI27':data.get('talla'),
+        'AN27':data.get('imc'),'AS27':data.get('perimetro_abdominal'),
+        'AX27':data.get('hemoglobina_capilar'),'BC27':data.get('glucosa_capilar'),
+        'BH27':data.get('spo2')
+    }
+    for coord,val in vals.items(): ws[coord]=val if val not in (None,'',0,0.0) else ''
+
+    # Revisión por sistemas: las X están en la celda posterior a cada etiqueta.
+    systems=data.get('systems_review') or []
+    sysnorm=set(_norm_text(x) for x in systems)
+    system_slots=[
+        ('PIEL Y ANEXOS','K31'),('ÓRGANOS DE LOS SENTIDOS','X31'),
+        ('RESPIRATORIO','AJ31'),('CARDIOVASCULAR','AX31'),('DIGESTIVO','BK31'),
+        ('GENITOURINARIO','K32'),('MÚSCULO-ESQUELÉTICO','X32'),('ENDÓCRINO','AJ32'),
+        ('HEMOLINFÁTICO','AX32'),('NERVIOSO','BK32')
+    ]
+    for _,coord in system_slots: ws[coord]=''
+    for label,coord in system_slots:
+        if _norm_text(label) in sysnorm or any(_norm_text(label) in s or s in _norm_text(label) for s in sysnorm):
+            ws[coord]='X'
+    # Descripción por sistemas queda en el área libre inferior.
+    ws['A33']=data.get('systems_details') or ''
+
+    # Examen físico regional/sistémico.
+    for coord in ['K39','W39','AJ39','AV39','BK39','K40','W40','AJ40','AV40','BK40','K41','W41','AJ41','AV41','BK41','K42','W42','AJ42','AV42','BK42','K43','W43','AJ43','AV43','BK43']:
+        ws[coord]=''
+    regional_slots=[
+        ('PIEL Y FANERAS','K39'),('CABEZA','K40'),('OJOS','K41'),('OÍDOS','K42'),('NARIZ','K43'),
+        ('BOCA','W39'),('OROFARINGE','W40'),('CUELLO','W41'),('AXILAS Y MAMAS','W42'),('TÓRAX','W43'),
+        ('ABDOMEN','AJ39'),('COLUMNA VERTEBRAL','AJ40'),('INGLE Y PERINÉ','AJ41'),('MIEMBROS SUPERIORES','AJ42'),('MIEMBROS INFERIORES','AJ43')
+    ]
+    systemic_slots=[
+        ('ÓRGANOS DE LOS SENTIDOS','AV39'),('RESPIRATORIO','AV40'),('CARDIOVASCULAR','AV41'),
+        ('DIGESTIVO','AV42'),('GENITAL','AV43'),('URINARIO','BK39'),('MÚSCULO-ESQUELÉTICO','BK40'),
+        ('ENDÓCRINO','BK41'),('HEMOLINFÁTICO','BK42'),('NEUROLÓGICO','BK43')
+    ]
+    rn=set(_norm_text(x) for x in data.get('physical_regional',[]))
+    sn=set(_norm_text(x) for x in data.get('physical_systemic',[]))
+    for label,coord in regional_slots:
+        if _norm_text(label) in rn or any(_norm_text(label) in s or s in _norm_text(label) for s in rn): ws[coord]='X'
+    for label,coord in systemic_slots:
+        if _norm_text(label) in sn or any(_norm_text(label) in s or s in _norm_text(label) for s in sn): ws[coord]='X'
+    # Texto del examen físico en el área de observaciones.
+    ws['A44']=data.get('physical_details') or ''
+
+    _fill_diagnoses(ws,data.get('diagnoses'),data.get('diagnostico'))
+    ws['A52']=data.get('tratamiento') or ''
+
+    if occurred:
+        ws['A61']=occurred.date()
+        ws['I61']=occurred.time().replace(second=0,microsecond=0)
+    ws['O61']=d1
+    ws['AH61']=ds1
+    ws['AY61']=ds2
+    ws['A63']=h.get('professional_id') or ''
+
+def _find_checkbox_for_label(ws, label_cell):
+    # Busca la celda combinada angosta que sigue a la etiqueta del examen.
+    row=label_cell.row
+    # Determina el rango combinado que contiene la etiqueta.
+    containing=None
+    for mr in ws.merged_cells.ranges:
+        if mr.min_row==row and mr.max_row==row and mr.min_col<=label_cell.column<=mr.max_col:
+            containing=mr
+            break
+    if not containing:
+        return None
+    candidates=[]
+    for mr in ws.merged_cells.ranges:
+        if mr.min_row==row and mr.max_row==row and mr.min_col>containing.max_col and mr.max_col-mr.min_col<=1:
+            candidates.append(mr)
+    if candidates:
+        candidates.sort(key=lambda r:r.min_col)
+        return ws.cell(row,candidates[0].min_col).coordinate
+    return None
+
+def _mark_lab_tests(ws, selected):
+    # Las X de la plantilla son solo datos de ejemplo; limpiar el área de exámenes.
+    for row in range(17,84):
+        for cell in ws[row]:
+            if isinstance(cell.value,str) and cell.value.strip().upper()=='X':
+                cell.value=''
+    wanted=[_norm_text(x) for x in selected or []]
+    if not wanted: return
+    aliases={
+        'VSG':'VELOCIDAD DE ERITROSEDIMENTACIÓN',
+        'TP':'TIEMPO DE PROTROMBINA TP',
+        'TTP':'TIEMPO DE TROMBOPLASTINA PARCIAL TTP',
+        'INR':'INR',
+        'PCR CUANTITATIVO':'PCR CUANTITATIVO',
+        'HB A1C':'HEMOGLOBINA GLICOSILADA HBA1C',
+        'HBA1C':'HEMOGLOBINA GLICOSILADA HBA1C',
+        'ELECTROLITOS':'NA',
+        'GASOMETRÍA ARTERIAL':'GASOMETRÍA ARTERIAL',
+        'GASOMETRÍA VENOSA':'GASOMETRÍA VENOSA',
+        'VIH 1 2':'VIH 1 2 CUALITATIVA',
+        'HEPATITIS A':'HEPATITIS A TOTAL',
+        'HEPATITIS B':'ANTIGENO SUPERFICIE HEPATITIS B HBSAG',
+        'HEPATITIS C':'HEPATITIS C HVC',
+        'VDRL':'VDRL',
+        'ANA':'ANA',
+        'ANCA':'ANCA C',
+        'ANTI DNA':'ANTI DNA',
+        'FACTOR REUMATOIDEO':'FACTOR REUMATOIDEO IGM',
+        'TROPONINA I':'TROPONINA I',
+        'TROPONINA T':'TROPONINA T',
+        'CK MB':'CK MB',
+        'GRUPO Y FACTOR':'GRUPO Y FACTOR',
+        'COOMBS DIRECTO':'COOMBS DIRECTO',
+        'COOMBS INDIRECTO':'COOMBS INDIRECTO',
+        'CULTIVO Y ANTIBIOGRAMA':'CULTIVO Y ANTIBIOGRAMA',
+        'ESTUDIO MICOLÓGICO':'ESTUDIO MICOLÓGICO KOH DE',
+        'MARCADORES TUMORALES':'MARCADORES TUMORALES',
+    }
+    label_cells=[]
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value,str) and cell.value and not cell.value.startswith('='):
+                label_cells.append(cell)
+    for wanted_text in wanted:
+        target=aliases.get(wanted_text,wanted_text)
+        # Prefer exact normalized match; otherwise a contained match.
+        matches=[c for c in label_cells if _norm_text(c.value)==target]
+        if not matches:
+            matches=[c for c in label_cells if target in _norm_text(c.value) or _norm_text(c.value) in target]
+        for c in matches[:1]:
+            checkbox=_find_checkbox_for_label(ws,c)
+            if checkbox:
+                ws[checkbox]='X'
+                break
+
+def _fill_interconsult(ws,data,h):
+    # Limpiar selecciones que vienen de ejemplo en la plantilla.
+    for coord in ['N10','BN10']:
+        ws[coord]=''
+    ws['N10']='X'  # consulta externa
+    # Los bloques grandes de texto están directamente en las filas indicadas.
+    ws['Y10']=data.get('interconsult_specialty') or ''
+    ws['O11']=data.get('interconsult_specialty') or ''
+    ws['O12']=data.get('interconsult_reason') or ''
+    ws['A17']=data.get('clinical_summary') or data.get('enfermedad_actual') or ''
+    ws['A21']=data.get('exam_results') or data.get('examenes') or ''
+    ws['A35']=data.get('therapeutic_plan') or data.get('tratamiento') or ''
+
+def _fill_referral(ws,data):
+    typ=_norm_text(data.get('referral_type'))
+    ws['AU7']='X' if typ=='REFERENCIA' else ''
+    ws['BA7']='X' if typ=='DERIVACIÓN' else ''
+    reasons=set(_norm_text(x) for x in data.get('referral_reasons',[]))
+    # Motivos 1-9: checkboxes BA/BY columns in the official form.
+    reason_cells=['BA9','BA10','BA11','BA12','BA13','BY9','BY10','BY11','BY12']
+    labels=[
+        'ACCESIBILIDAD GEOGRÁFICA','FALTA DE ESPACIO FÍSICO','FALTA DE EQUIPAMIENTO',
+        'EQUIPOS EN MAL ESTADO','PROBLEMAS DE INFRAESTRUCTURA','PROBLEMAS DE ABASTECIMIENTO',
+        'INSUFICIENCIA DE PROFESIONALES','INADECUADA CAPACIDAD RESOLUTIVA',
+        'AUSENCIA DE PRESTACIÓN'
+    ]
+    for coord in reason_cells: ws[coord]=''
+    for label,coord in zip(labels,reason_cells):
+        if any(_norm_text(label)==r or _norm_text(label) in r or r in _norm_text(label) for r in reasons):
+            ws[coord]='X'
+    ws['S17']=''
+    ws['AM17']='CONSULTA EXTERNA'
+    ws['BF17']=data.get('referral_specialty') or data.get('referral_service') or ''
+    ws['A20']=data.get('referral_summary') or data.get('enfermedad_actual') or ''
+    ws['A23']=data.get('referral_findings') or data.get('examenes') or ''
+
+def _fill_imaging(ws,data):
+    # Servicio por defecto: consulta externa. La plantilla trae una prioridad
+    # y selecciones de ejemplo que no deben salir en la descarga.
+    ws['O10']='x'
+    ws['BR10']=''
+    ws['BR13']=''
+    ws['AQ19']=''
+    imaging_map={
+        'RX CONVENCIONAL':'G13','RX PORTÁTIL':'M13','TOMOGRAFÍA':'U13','RESONANCIA':'AB13',
+        'ECOGRAFÍA':'AI13','MAMOGRAFÍA':'AQ13','PROCEDIMIENTO':'AZ13','OTRO':'BE13'
+    }
+    for coord in imaging_map.values(): ws[coord]=''
+    for item in data.get('imaging_types',[]) or []:
+        n=_norm_text(item)
+        for label,coord in imaging_map.items():
+            nl=_norm_text(label)
+            if n==nl or nl in n or n in nl:
+                ws[coord]='x'
+                break
+    ws['A16']=data.get('imaging_description') or ''
+    ws['A20']=data.get('imaging_reason') or ''
+    ws['A25']=data.get('clinical_summary') or data.get('enfermedad_actual') or ''
+    ws['BR13']='x' if data.get('sedacion') else ''
+    ws['AQ19']='x' if data.get('contaminado') else ''
+    ws['A19']=data.get('fum') or ''
+
+def _fill_recipe(ws,patient,data,h):
+    ws['C20']=proper_name(h.get('doctor'))
+    ws['C21']=h.get('specialty') or ''
+    ws['B8']=f"Alergias: {data.get('alergias') or 'NO'}"
+    lines=[x.strip() for x in str(data.get('prescription') or '').splitlines() if x.strip()]
+    for row in range(10,18):
+        for col in ['B','G','H','I','J']:
+            ws[f'{col}{row}']=''
+    for i,line in enumerate(lines[:8],10):
+        parts=[x.strip() for x in line.split('|')]
+        while len(parts)<7: parts.append('')
+        # B: medicamento + concentración/forma + cantidad
+        ws[f'B{i}']=' | '.join(parts[:3]).strip(' |')
+        ws[f'G{i}']=parts[3]
+        ws[f'H{i}']=parts[4]
+        ws[f'I{i}']=parts[5]
+        ws[f'J{i}']=parts[6]
+    ws['B35']=data.get('prescription_warnings') or ''
+
+def _prepare_official_sheet(ws,source_name):
+    # Recalcula fórmulas al abrirse en Excel/LibreOffice.
+    ws.sheet_view.showGridLines=False
+    ws.freeze_panes=None
+
+def _populate_official_group(wb, suffix, patient, h):
+    names={base:(base if suffix==1 else f'{base}_{suffix:02d}') for base in OFFICIAL_SHEETS}
+    hc=wb[names['HC']]
+    _fill_hc(hc,patient,h)
+    _fill_interconsult(wb[names['INTER007']],h.get('data') or {},h)
+    _fill_referral(wb[names['REF053']],h.get('data') or {})
+    _mark_lab_tests(wb[names['LAB010']],(h.get('data') or {}).get('lab_tests'))
+    lab=wb[names['LAB010']]
+    lab['A12']=(h.get('data') or {}).get('lab_treatment') or ''
+    lab['A13']=(h.get('data') or {}).get('other_lab_tests') or ''
+    _fill_imaging(wb[names['IMA012']],h.get('data') or {})
+    _fill_recipe(wb[names['RECETA']],patient,h.get('data') or {},h)
+    return names
+
+
 def clinical_excel(patient,histories):
-    wb=Workbook(); ws=wb.active; ws.title='Paciente'; ws.sheet_view.showGridLines=False
-    navy='0F4C5C'; teal='147D92'; light='EAF4F5'; edge=Side(style='thin',color='D5E3E7')
-    ws.merge_cells('A1:D1'); ws['A1']='HISTORIA CLÍNICA'; ws['A1'].fill=PatternFill('solid',fgColor=navy); ws['A1'].font=Font(color='FFFFFF',bold=True,size=16); ws['A1'].alignment=Alignment(horizontal='center')
-    patient_rows=[('Paciente',proper_name(patient.get('name'))),('Documento / historia clínica',patient.get('document')),('Sexo',patient.get('sex')),('Fecha de nacimiento',pretty(patient.get('birth_date'))),('Teléfono',patient.get('phone')),('Correo',patient.get('email')),('Dirección',patient.get('address')),('Ocupación',patient.get('occupation')),('Cobertura',patient.get('coverage'))]
-    for r,(label,value) in enumerate(patient_rows,3): ws.cell(r,1,label); ws.cell(r,2,pretty(value)); ws.cell(r,1).font=Font(bold=True,color=navy)
-    ws.column_dimensions['A'].width=31; ws.column_dimensions['B'].width=70
-    for index,h in enumerate(_finalized(histories),1):
-        sh=wb.create_sheet(f'Atención {index}'); sh.sheet_view.showGridLines=False; sh.merge_cells('A1:D1'); sh['A1']=f"ATENCIÓN {pretty(h['occurred_at'])}"; sh['A1'].fill=PatternFill('solid',fgColor=navy); sh['A1'].font=Font(color='FFFFFF',bold=True,size=14); sh['A1'].alignment=Alignment(horizontal='center')
-        meta=[('Paciente',proper_name(patient.get('name'))),('Documento',patient.get('document')),('Médico',proper_name(h.get('doctor'))),('Especialidad',h.get('specialty')),('Tipo de consulta',h.get('consultation_type')),('Documento profesional',h.get('professional_id')),('Registro profesional',h.get('registration'))]
-        row=3
-        for label,value in meta: sh.cell(row,1,label).font=Font(bold=True,color=navy); sh.cell(row,2,pretty(value)); row+=1
-        row+=1
-        for title,items in _encounter_rows(h.get('data') or {}):
-            sh.merge_cells(start_row=row,start_column=1,end_row=row,end_column=4); cell=sh.cell(row,1,title); cell.fill=PatternFill('solid',fgColor=teal); cell.font=Font(color='FFFFFF',bold=True); row+=1
-            for label,value in items:
-                sh.cell(row,1,label).font=Font(bold=True,color=navy); sh.merge_cells(start_row=row,start_column=2,end_row=row,end_column=4); sh.cell(row,2,value); sh.cell(row,2).alignment=Alignment(wrap_text=True,vertical='top'); row+=1
-            row+=1
-        sh.column_dimensions['A'].width=34; sh.column_dimensions['B'].width=34; sh.column_dimensions['C'].width=22; sh.column_dimensions['D'].width=22
-        for cells in sh.iter_rows(min_row=3,max_row=row,max_col=4):
-            for cell in cells: cell.border=Border(bottom=edge); cell.alignment=Alignment(wrap_text=True,vertical='top')
-        sh.freeze_panes='A3'; sh.page_setup.fitToWidth=1; sh.sheet_properties.pageSetUpPr.fitToPage=True
+    finished=_finalized(histories)
+    wb=load_workbook(ISSFA_TEMPLATE)
+    # El formulario oficial es una atención por juego de hojas. Si el expediente
+    # tiene varias atenciones, se conservan todas en juegos numerados.
+    if not finished:
+        out=io.BytesIO(); wb.save(out); return out.getvalue()
+    # Crear primero todos los juegos secundarios desde la plantilla todavía intacta;
+    # así una atención no arrastra datos de otra.
+    for i in range(2,len(finished)+1):
+        names={base:(base if i==1 else f'{base}_{i:02d}') for base in OFFICIAL_SHEETS}
+        for base,new_name in names.items():
+            source=wb[base]
+            copy=wb.copy_worksheet(source)
+            copy.title=new_name
+            for row in copy.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value,str) and cell.value.startswith('='):
+                        cell.value=cell.value.replace('HC!',f"'{names['HC']}'!")
+    for i,h in enumerate(finished,1):
+        _populate_official_group(wb,i,patient,h)
+    wb.active=wb.sheetnames.index('HC')
+    try:
+        wb.calculation.fullCalcOnLoad=True
+        wb.calculation.forceFullCalc=True
+        wb.calculation.calcMode='auto'
+    except Exception:
+        pass
     out=io.BytesIO(); wb.save(out); return out.getvalue()
 
 def clinical_pdf(patient,histories):

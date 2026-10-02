@@ -38,7 +38,16 @@ class CoreTests(unittest.TestCase):
     json.dumps(data)
     patient={'name':'ana ruiz','document':'1712345678','sex':'Femenino','birth_date':date(1980,1,1),'phone':'0999999999','address':'Quito','coverage':'Particular'}
     histories=[{'status':'Finalizada','occurred_at':datetime(2026,10,1,10,tzinfo=TZ),'doctor':'juan perez','specialty':'Medicina general','consultation_type':'C1','professional_id':'1700000000','registration':'MSP-001','data':data,'amendments':[]}]
-    assert clinical_excel(patient,histories)[:2]==b'PK'
+    xlsx=clinical_excel(patient,histories)
+    assert xlsx[:2]==b'PK'
+    from openpyxl import load_workbook
+    import io
+    wb=load_workbook(io.BytesIO(xlsx),data_only=False)
+    assert wb.sheetnames[:6]==['HC','INTER007','REF053','LAB010','IMA012','RECETA']
+    assert wb['HC']['T3'].value=='MEDISUPORT / QMC'
+    assert wb['HC']['AH3'].value=='1712345678'
+    assert wb['HC']['B47'].value=='Hipertensión'
+    assert wb['HC']['Y47'].value is None or wb['HC']['Y47'].value==''
     assert clinical_pdf(patient,histories)[:4]==b'%PDF'
 
 if __name__=='__main__': unittest.main()

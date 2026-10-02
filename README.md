@@ -77,3 +77,7 @@ python -m py_compile app.py core.py legacy.py exports.py manage.py
 
 La prueba completa contra Supabase debe hacerse desde el Codespace porque el
 entorno de construcción no utiliza las credenciales del proyecto.
+
+### Exportación oficial ISSFA / SNS-MSP
+
+La descarga de la historia clínica en Excel usa la plantilla oficial entregada por la clínica (`templates/HISTORIA_CLINICA_ISSFA.xlsx`). El reporte conserva las hojas `HC`, `INTER007`, `REF053`, `LAB010`, `IMA012` y `RECETA`, y llena los campos a partir de la atención finalizada. Si el expediente tiene varias atenciones finalizadas, se genera un juego numerado de esas seis hojas por cada atención.
