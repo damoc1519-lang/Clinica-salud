@@ -18,3 +18,10 @@ MEDISUPORT V2 — PASOS RÁPIDOS
 
 Las tablas anteriores se conservan. La versión nueva trabaja dentro del esquema
 medisuport de Supabase.
+
+IMPORTACIÓN DE PACIENTES ISSFA
+- La plantilla de importación guarda apellido1, apellido2, nombre1 y nombre2 por separado.
+- La importación ya no exige que el Excel externo tenga una pestaña llamada “Pacientes”.
+- La app busca automáticamente una hoja que contenga documento/cédula y datos de nombres, incluso si los encabezados están después de filas de título.
+- Se aceptan formatos habituales como CÉDULA + APELLIDOS + NOMBRES, además de nombres completos.
+- Antes de confirmar, revise la vista previa de nombres y documentos.

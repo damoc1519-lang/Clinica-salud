@@ -278,7 +278,13 @@ def dashboard():
         st.caption("Para abrir una consulta, la recepción debe marcar primero que el paciente llegó.")
 
 def patient_form(existing=None):
-    e=existing or {}
+    e=dict(existing or {})
+    if not (e.get('apellido1') and e.get('nombre1')) and e.get('name'):
+        parts=proper_name(e['name']).split()
+        e['apellido1']=e.get('apellido1') or (parts[0] if parts else '')
+        e['apellido2']=e.get('apellido2') or (parts[1] if len(parts)>=4 else '')
+        e['nombre1']=e.get('nombre1') or (parts[2] if len(parts)>=3 else (parts[1] if len(parts)==2 else ''))
+        e['nombre2']=e.get('nombre2') or (' '.join(parts[3:]) if len(parts)>=4 else '')
     # La pestaña "Buscar y editar" y la pestaña "Registrar" se renderizan
     # al mismo tiempo. Cada formulario necesita una clave distinta.
     form_key=f"patient_form_{e.get('id', 'new')}"
@@ -286,7 +292,11 @@ def patient_form(existing=None):
         a,b=st.columns(2)
         with a:
             document=st.text_input("Documento *",value=e.get('document',''),disabled=bool(existing))
-            name=st.text_input("Nombre completo *",value=e.get('name',''))
+            st.caption("Nombres separados para que el formato ISSFA no tenga que adivinarlos.")
+            apellido1=st.text_input("Primer apellido *",value=e.get('apellido1') or '')
+            apellido2=st.text_input("Segundo apellido",value=e.get('apellido2') or '')
+            nombre1=st.text_input("Primer nombre *",value=e.get('nombre1') or '')
+            nombre2=st.text_input("Segundo nombre",value=e.get('nombre2') or '')
             sex=st.selectbox("Sexo",['','Femenino','Masculino','Otro'],index=['','Femenino','Masculino','Otro'].index(e.get('sex') or '') if (e.get('sex') or '') in ['','Femenino','Masculino','Otro'] else 0)
             birth=st.date_input("Fecha de nacimiento",value=e.get('birth_date'),min_value=date(1900,1,1),
                                 max_value=now().date(),format='DD/MM/YYYY',key=f"birth_{e.get('id', 'new')}",
@@ -301,7 +311,8 @@ def patient_form(existing=None):
             origins=['Propio de la Clínica','Convenio institucional']
             origin=st.selectbox("Origen",origins,index=origins.index(e.get('origin')) if e.get('origin') in origins else 0)
         if st.form_submit_button("Guardar ficha",type="primary"):
-            data={'document':document,'name':name,'sex':sex,'birth_date':birth,'phone':phone,'email':email,
+            data={'document':document,'apellido1':apellido1,'apellido2':apellido2,'nombre1':nombre1,'nombre2':nombre2,
+                  'name':' '.join(x for x in (apellido1,apellido2,nombre1,nombre2) if x),'sex':sex,'birth_date':birth,'phone':phone,'email':email,
                   'address':address,'occupation':occupation,'coverage':coverage,'origin':origin}
             run(lambda:db.save_patient(UID,data,e.get('id'),e.get('version')),"Ficha guardada.")
 
@@ -345,27 +356,103 @@ def patients_page():
             else: st.info("No hay pacientes archivados.")
 
 IMPORT_COLUMNS={'cedula','nombres_completos','sexo','fecha_nacimiento','telefono','correo','direccion','ocupacion','numero_afiliado'}
+IMPORT_ALIASES={
+    'cedula':['cedula','cédula','documento','identificacion','identificación','dni','documento_identidad','numero_documento'],
+    'nombres_completos':['nombres_completos','nombre_completo','paciente','apellidos_nombres','nombres_y_apellidos','nombre_y_apellido','apellidos_y_nombres','apellidos_nombres'],
+    'apellidos':['apellidos','apellido','apellidos_completos'],
+    'nombres':['nombres','nombre','nombres_completos'],
+    'apellido1':['apellido1','primer_apellido','apellido_paterno','apellido_paterno_1'],
+    'apellido2':['apellido2','segundo_apellido','apellido_materno','apellido_materno_2'],
+    'nombre1':['nombre1','primer_nombre'],
+    'nombre2':['nombre2','segundo_nombre'],
+    'sexo':['sexo','genero','género'],
+    'fecha_nacimiento':['fecha_nacimiento','fecha_de_nacimiento','nacimiento','fecha_nac','fec_nacimiento'],
+    'telefono':['telefono','teléfono','celular','movil','móvil','telefono_celular'],
+    'correo':['correo','email','e_mail','correo_electronico','correo_electrónico'],
+    'direccion':['direccion','dirección','domicilio'],
+    'ocupacion':['ocupacion','ocupación','profesion','profesión'],
+    'numero_afiliado':['numero_afiliado','número_afiliado','afiliado','numero_afiliacion','número_afiliación','codigo_afiliado','codigo_afiliacion']
+}
 def normalized_header(value):
     text=unicodedata.normalize('NFKD',str(value or '')).encode('ascii','ignore').decode().lower().strip()
     return re.sub(r'[^a-z0-9]+','_',text).strip('_')
+def _find_import_sheet(uploaded):
+    try:
+        book=pd.ExcelFile(uploaded)
+    except Exception as exc:
+        raise AppError(f'No se pudo abrir el archivo Excel: {exc}')
+    names=book.sheet_names
+    if 'Pacientes' in names: return 'Pacientes', book, 0
+    candidates=[]
+    for sheet in names:
+        try:
+            sample=pd.read_excel(book,sheet_name=sheet,header=None,nrows=15,dtype=str)
+        except Exception:
+            continue
+        for header_row,values in sample.iterrows():
+            headers={normalized_header(c) for c in values.tolist() if str(c).strip() and str(c).lower()!='nan'}
+            has_doc=bool(headers & {normalized_header(x) for x in IMPORT_ALIASES['cedula']})
+            has_name=bool(headers & ({normalized_header(x) for x in IMPORT_ALIASES['nombres_completos']}|{normalized_header(x) for x in IMPORT_ALIASES['apellidos']}|{normalized_header(x) for x in IMPORT_ALIASES['apellido1']}))
+            if has_doc and has_name:
+                candidates.append((sheet,int(header_row))); break
+    if len(candidates)==1: return candidates[0][0], book, candidates[0][1]
+    if len(candidates)>1:
+        # Preferir una hoja cuyo nombre sugiera afiliados/pacientes/beneficiarios.
+        preferred=[x for x in candidates if any(k in normalized_header(x[0]) for k in ('paciente','afiliado','beneficiario','usuario','nomina','nomina'))]
+        return (preferred or candidates)[0][0], book, (preferred or candidates)[0][1]
+    raise AppError('No encontré una hoja de pacientes. Hojas disponibles: '+', '.join(names)+'. Descargue la plantilla oficial o use una hoja que contenga documento/cédula y nombres.')
+
+def _resolve_columns(columns):
+    normalized={normalized_header(c):c for c in columns}
+    resolved={}
+    for target,aliases in IMPORT_ALIASES.items():
+        for alias in aliases:
+            key=normalized_header(alias)
+            if key in normalized:
+                resolved[target]=normalized[key]; break
+    if 'nombres_completos' not in resolved and not ('apellidos' in resolved and 'nombres' in resolved) and not ('apellido1' in resolved and 'nombre1' in resolved):
+        raise AppError('No pude identificar los nombres. Se necesita nombres completos, apellidos + nombres, o primer apellido + primer nombre.')
+    if 'cedula' not in resolved:
+        raise AppError('No pude identificar la cédula/documento del archivo.')
+    return resolved
+
 def patient_import_preview(uploaded,agreement_name):
-    frame=pd.read_excel(uploaded,sheet_name='Pacientes',dtype=str)
-    frame.columns=[normalized_header(c) for c in frame.columns]
-    missing=IMPORT_COLUMNS-set(frame.columns)
-    if missing: raise AppError('Faltan columnas en la plantilla: '+', '.join(sorted(missing))+'.')
-    frame=frame[list(IMPORT_COLUMNS)].fillna('')
+    sheet,book,header_row=_find_import_sheet(uploaded)
+    frame=pd.read_excel(book,sheet_name=sheet,header=header_row,dtype=str)
+    resolved=_resolve_columns(frame.columns)
+    frame=frame.fillna('')
     rows=[]; seen=set()
     sex_map={'f':'Femenino','femenino':'Femenino','mujer':'Femenino','m':'Masculino','masculino':'Masculino','hombre':'Masculino','otro':'Otro'}
+    def val(source,key): return str(source[resolved[key]]).strip() if key in resolved else ''
     for _,source in frame.iterrows():
         if not any(str(x).strip() for x in source): continue
-        raw_date=str(source['fecha_nacimiento']).strip(); birth=None
+        raw_date=val(source,'fecha_nacimiento'); birth=None
         if raw_date:
             parsed=pd.to_datetime(raw_date,dayfirst=True,errors='coerce')
             birth=None if pd.isna(parsed) else parsed.date()
-        document=re.sub(r'\.0$','',str(source['cedula']).strip())
-        row={'document':document,'name':source['nombres_completos'],'sex':sex_map.get(normalized_header(source['sexo']),str(source['sexo']).strip()),
-             'birth_date':birth,'phone':re.sub(r'\.0$','',str(source['telefono']).strip()),'email':source['correo'],'address':source['direccion'],
-             'occupation':source['ocupacion'],'coverage':agreement_name,'origin':'Convenio institucional','member_number':re.sub(r'\.0$','',str(source['numero_afiliado']).strip())}
+        document=re.sub(r'\.0$','',val(source,'cedula'))
+        if 'apellidos' in resolved and 'nombres' in resolved and 'nombres_completos' not in resolved:
+            ap=proper_name(val(source,'apellidos')).split()
+            no=proper_name(val(source,'nombres')).split()
+            apellido1=val(source,'apellido1') or (ap[0] if ap else '')
+            apellido2=val(source,'apellido2') or (' '.join(ap[1:]) if len(ap)>1 else '')
+            nombre1=val(source,'nombre1') or (no[0] if no else '')
+            nombre2=val(source,'nombre2') or (' '.join(no[1:]) if len(no)>1 else '')
+            full_name=' '.join(x for x in (apellido1,apellido2,nombre1,nombre2) if x)
+        elif 'nombres_completos' in resolved:
+            full_name=val(source,'nombres_completos')
+            parts=proper_name(full_name).split()
+            apellido1=val(source,'apellido1') or (parts[0] if parts else '')
+            apellido2=val(source,'apellido2') or (parts[1] if len(parts)>=4 else '')
+            nombre1=val(source,'nombre1') or (parts[2] if len(parts)>=3 else (parts[1] if len(parts)==2 else ''))
+            nombre2=val(source,'nombre2') or (' '.join(parts[3:]) if len(parts)>=4 else '')
+        else:
+            apellido1,apellido2,nombre1,nombre2=[val(source,k) for k in ('apellido1','apellido2','nombre1','nombre2')]
+            full_name=' '.join(x for x in (apellido1,apellido2,nombre1,nombre2) if x)
+        row={'document':document,'name':full_name,'apellido1':apellido1,'apellido2':apellido2,'nombre1':nombre1,'nombre2':nombre2,
+             'sex':sex_map.get(normalized_header(val(source,'sexo')),val(source,'sexo')),
+             'birth_date':birth,'phone':re.sub(r'\.0$','',val(source,'telefono')),'email':val(source,'correo'),'address':val(source,'direccion'),
+             'occupation':val(source,'ocupacion'),'coverage':agreement_name,'origin':'Convenio institucional','member_number':re.sub(r'\.0$','',val(source,'numero_afiliado'))}
         try:
             from core import validate_patient
             validate_patient(row)
@@ -373,7 +460,7 @@ def patient_import_preview(uploaded,agreement_name):
             seen.add(document); status='Listo'
         except Exception as exc: status=str(exc)
         rows.append((row,status))
-    return rows
+    return rows,sheet
 
 def agreements_page():
     st.title("Convenios e importación")
@@ -415,7 +502,8 @@ def agreements_page():
     uploaded=st.file_uploader("Archivo Excel completado",type=['xlsx'],key='patient_xlsx')
     if uploaded:
         try:
-            prepared=patient_import_preview(uploaded,chosen['name'])
+            prepared,sheet_used=patient_import_preview(uploaded,chosen['name'])
+            st.caption(f'Hoja utilizada: {sheet_used}')
             preview=[{'Documento':r['document'],'Paciente':proper_name(r['name']),'Número afiliado':r['member_number'],'Estado':status} for r,status in prepared]
             st.dataframe(pd.DataFrame(preview),hide_index=True,use_container_width=True)
             valid=[r for r,status in prepared if status=='Listo']; errors=len(prepared)-len(valid)

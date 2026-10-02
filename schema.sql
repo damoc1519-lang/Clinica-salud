@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 CREATE INDEX IF NOT EXISTS login_recent ON login_attempts(username,attempted_at);
 CREATE TABLE IF NOT EXISTS patients (
  id BIGSERIAL PRIMARY KEY, document TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+ apellido1 TEXT, apellido2 TEXT, nombre1 TEXT, nombre2 TEXT,
  sex TEXT, birth_date DATE, address TEXT, phone TEXT, email TEXT,
  occupation TEXT, coverage TEXT, origin TEXT,
  active BOOLEAN NOT NULL DEFAULT TRUE, archive_reason TEXT,
@@ -42,6 +43,10 @@ CREATE TABLE IF NOT EXISTS patients (
  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS patient_name_idx ON patients(lower(name));
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS apellido1 TEXT;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS apellido2 TEXT;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS nombre1 TEXT;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS nombre2 TEXT;
 CREATE TABLE IF NOT EXISTS agreements (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, code TEXT,
  tax_id TEXT, contact_name TEXT, phone TEXT, email TEXT,

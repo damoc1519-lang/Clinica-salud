@@ -68,7 +68,10 @@ def slots_for_day(day,rules,busy,blocks,duration,clock=None):
     return sorted(result)
 
 def validate_patient(data):
-    p={k:clean(data.get(k)) for k in ['document','name','sex','address','phone','email','occupation','coverage','origin']}
+    p={k:clean(data.get(k)) for k in ['document','name','sex','address','phone','email','occupation','coverage','origin','apellido1','apellido2','nombre1','nombre2']}
+    # Si vienen los cuatro componentes, reconstruimos el nombre de búsqueda de forma determinista.
+    if any(p[k] for k in ('apellido1','apellido2','nombre1','nombre2')):
+        p['name']=proper_name(' '.join(x for x in (p['apellido1'],p['apellido2'],p['nombre1'],p['nombre2']) if x))
     p['document']=normalize_doc(p['document'])
     p['name']=proper_name(p['name'])
     if not p['document'] or len(p['document'])>30: raise AppError('Ingrese un documento de 1 a 30 caracteres.')
@@ -353,7 +356,15 @@ class Database:
             for p,member in prepared:
                 c.execute('SELECT id FROM patients WHERE document=%s FOR UPDATE',(p['document'],)); found=c.fetchone()
                 if found:
-                    pid=found['id']; status='Paciente existente vinculado'
+                    pid=found['id']
+                    # La carga del convenio puede traer datos demográficos más completos.
+                    # Actualizamos los campos estructurados para que el formato ISSFA no
+                    # tenga que reconstruir apellidos/nombres a partir de una sola cadena.
+                    update_keys=['name','apellido1','apellido2','nombre1','nombre2','sex','birth_date','phone','email','address','occupation','coverage','origin']
+                    c.execute(sql.SQL('UPDATE patients SET {} ,version=version+1,updated_at=now() WHERE id=%s').format(
+                        sql.SQL(',').join(sql.SQL('{}=%s').format(sql.Identifier(k)) for k in update_keys)),
+                        [p[k] for k in update_keys]+[pid])
+                    status='Paciente existente actualizado y vinculado'
                 else:
                     keys=list(p); c.execute(sql.SQL('INSERT INTO patients ({}) VALUES ({}) RETURNING id').format(sql.SQL(',').join(map(sql.Identifier,keys)),sql.SQL(',').join(sql.Placeholder()*len(keys))),list(p.values())); pid=c.fetchone()['id']; status='Paciente registrado'
                 c.execute('''INSERT INTO patient_agreements(patient_id,agreement_id,member_number,active) VALUES(%s,%s,%s,TRUE)

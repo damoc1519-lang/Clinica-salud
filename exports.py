@@ -61,11 +61,15 @@ def _norm_text(value):
     text = re.sub(r'[^A-Z0-9 ]+', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-def _patient_parts(name):
-    """El formulario oficial separa apellidos y nombres.
-    La app conserva actualmente un único campo de nombre; se interpreta
-    en el orden habitual de la carga histórica: apellido1 apellido2 nombre1 nombre2.
+def _patient_parts(name, patient=None):
+    """Devuelve apellido1, apellido2, nombre1 y nombre2.
+    Usa los campos estructurados cuando existen y solo recurre a heurística
+    para expedientes antiguos que todavía no los tienen.
     """
+    patient=patient or {}
+    structured=tuple(proper_name(patient.get(k) or '') for k in ('apellido1','apellido2','nombre1','nombre2'))
+    if structured[0] and structured[2]:
+        return structured
     words=proper_name(name).split()
     if len(words)>=4:
         return words[0],words[1],words[2],' '.join(words[3:])
@@ -135,7 +139,7 @@ def _fill_hc(ws, patient, h):
     if occurred and occurred.tzinfo:
         occurred=occurred.astimezone(TZ)
 
-    s1,s2,n1,n2=_patient_parts(patient.get('name'))
+    s1,s2,n1,n2=_patient_parts(patient.get('name'),patient)
     d1,ds1,ds2=_doctor_parts(h.get('doctor'))
     # Cabecera del formulario oficial.
     ws['A3']=_system_institution(patient)
