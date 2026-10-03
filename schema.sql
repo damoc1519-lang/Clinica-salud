@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT INTO settings VALUES ('schema_version','2'),('consultation_rule','specialty')
  ON CONFLICT DO NOTHING;
-UPDATE settings SET value='8' WHERE key='schema_version';
+UPDATE settings SET value='9' WHERE key='schema_version';
 CREATE TABLE IF NOT EXISTS doctors (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  specialties TEXT[] NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -217,6 +217,20 @@ CREATE TABLE IF NOT EXISTS legacy_archive (
  imported_entity TEXT, imported_id BIGINT, issue TEXT,
  PRIMARY KEY(source_table,source_key)
 );
+-- Reinicio definitivo solicitado para comenzar la empresa desde cero.
+-- Se ejecuta una sola vez y conserva únicamente las cuentas administradoras.
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM settings WHERE key='company_reset_v9') THEN
+  TRUNCATE TABLE audit,login_attempts,cash_movements,payments,invoice_items,invoices,
+   agreement_tariffs,certificates,amendments,encounters,appointments,blocks,
+   availability,patient_agreements,legacy_archive,patients,agreements RESTART IDENTITY;
+  DELETE FROM users WHERE role<>'admin';
+  DELETE FROM doctors;
+  DELETE FROM services WHERE code NOT IN ('CONS-GEN','CONS-ESP','CONS-CTL','EMER-001','ECO-001','RX-001','LAB-001','CUR-001','INY-001','PROC-001','CERT-001','TER-001','ENF-001','DOM-001','TEL-001');
+  UPDATE services SET base_price=0,tax_rate=0,active=TRUE,version=version+1;
+  INSERT INTO settings(key,value) VALUES('company_reset_v9','completed');
+ END IF;
+END $$;
 -- No políticas para anon/authenticated. La aplicación accede desde el servidor.
 DO $$ DECLARE t RECORD; BEGIN
  FOR t IN SELECT tablename FROM pg_tables WHERE schemaname='medisuport' LOOP

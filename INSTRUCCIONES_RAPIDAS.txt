@@ -1,5 +1,9 @@
 MEDISUPORT V2 — PASOS RÁPIDOS
 
+IMPORTANTE VERSIÓN 9: al abrirla por primera vez se eliminan definitivamente
+los datos operativos existentes y las cuentas que no sean administradoras. Se
+conserva únicamente la cuenta administrativa y el catálogo general de servicios.
+
 1. Descomprima el paquete en la raíz de su repositorio de Codespaces.
 2. NO reemplace ni comparta .streamlit/secrets.toml; conserve el que ya funciona.
 3. Terminal:

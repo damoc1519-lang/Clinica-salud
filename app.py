@@ -2,7 +2,7 @@
 from datetime import date, datetime, time, timedelta
 from calendar import monthrange
 from pathlib import Path
-import io, json, logging, traceback, re, unicodedata
+import io, json, logging, traceback, re, unicodedata, base64
 import pandas as pd
 import streamlit as st
 from psycopg2.errors import ExclusionViolation, UniqueViolation
@@ -155,7 +155,9 @@ def fail(exc):
 def run(action, success=None, rerun=True):
     try:
         result=action()
-        if success: st.success(success)
+        if success:
+            if rerun: st.session_state.flash_success=success
+            else: st.success(success)
         if rerun: st.rerun()
         return result if result is not None else True
     except Exception as exc:
@@ -196,6 +198,11 @@ try:
 except Exception as exc:
     st.session_state.pop('user',None); fail(exc); st.stop()
 UID=user['id']; ROLE=user['role']; DOCTOR=user['doctor_id']
+brand=db.branding(UID)
+st.markdown(f"""<style>
+:root{{--med-primary:{brand['primary']};--med-primary-2:{brand['secondary']};--med-accent:{brand['secondary']};}}
+[data-testid="stSidebar"]{{background:linear-gradient(180deg,{brand['primary']} 0%,{brand['secondary']} 140%)!important}}
+</style>""",unsafe_allow_html=True)
 
 if user['must_change']:
     st.title("Cambie su contraseña temporal")
@@ -212,7 +219,7 @@ if user['must_change']:
     st.stop()
 
 pages={
- 'admin':['Inicio','Pacientes','Convenios','Agenda','Facturación y caja','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
+ 'admin':['Inicio','Pacientes','Convenios','Agenda','Mis citas','Facturación y caja','Historia clínica','Certificados médicos','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
  'secretaria':['Inicio','Pacientes','Convenios','Agenda','Facturación y caja','Médicos y horarios','Reportes'],
  'medico':['Inicio','Mis citas','Historia clínica','Certificados médicos','Mi información profesional','Pacientes']
 }[ROLE]
@@ -220,7 +227,11 @@ pages={
 # siguiente ciclo, antes de crear el widget de navegación.
 if 'next_page' in st.session_state:
     st.session_state.page=st.session_state.pop('next_page')
-st.sidebar.title("Medisuport 🏥")
+try:
+    if brand.get('logo'): st.sidebar.image(base64.b64decode(brand['logo']),width=125)
+    elif (Path(__file__).parent/'assets/clinic_logo.png').exists(): st.sidebar.image(str(Path(__file__).parent/'assets/clinic_logo.png'),width=125)
+except Exception: pass
+st.sidebar.title(brand['name'])
 st.sidebar.caption("Gestión clínica segura")
 st.sidebar.write(f"**{user['name']}**")
 st.sidebar.caption({'admin':'Administrador','secretaria':'Secretaría','medico':'Médico'}[ROLE])
@@ -243,6 +254,8 @@ if ROLE=='medico':
             registration=st.text_input("Número de registro profesional",value=(profile or {}).get('registration') or '')
             if st.form_submit_button("Guardar mis datos"):
                 run(lambda:db.update_my_professional(UID,professional_id,registration),"Información profesional actualizada.")
+if st.session_state.get('flash_success'):
+    message=st.session_state.pop('flash_success'); st.success(f"✅ {message}"); st.toast(message,icon='✅')
 
 def professional_profile_page():
     st.title("Mi información profesional")
@@ -650,7 +663,7 @@ def clinical_form(enc):
 
 def history_page():
     st.title("Historia clínica")
-    if ROLE=='medico' and st.session_state.get('encounter_id'):
+    if ROLE in ('admin','medico') and st.session_state.get('encounter_id'):
         enc=db.encounter(UID,st.session_state.encounter_id)
         if enc['status']=='Borrador': clinical_form(enc)
         else: st.session_state.pop('encounter_id',None)
@@ -752,7 +765,11 @@ def certificates_page():
     st.caption("Emita certificados numerados con los datos del paciente y su registro profesional.")
     patient=patient_picker('certificate_patient')
     if not patient: return
-    profile=next((d for d in db.doctors(UID,all_rows=True) if d['id']==DOCTOR),None)
+    available_doctors=[d for d in db.doctors(UID,all_rows=False)]
+    if ROLE=='admin':
+        if not available_doctors: st.info("Primero registre un médico activo."); return
+        doctor_labels={proper_name(d['name']):d for d in available_doctors}; profile=doctor_labels[st.selectbox("Médico que emite el certificado",doctor_labels,key='admin_certificate_doctor')]
+    else: profile=next((d for d in available_doctors if d['id']==DOCTOR),None)
     if not profile or not profile.get('professional_id') or not profile.get('registration'):
         st.warning('Antes de emitir un certificado, complete su documento y número de registro en “Mi información profesional”.')
     needs_rest=st.checkbox("Requiere reposo médico",key='certificate_needs_rest')
@@ -771,7 +788,7 @@ def certificates_page():
         if st.form_submit_button("Emitir certificado",type="primary"):
             data={'institution':institution,'location':location,'specialty':specialty,'diagnosis':diagnosis,'cie10':cie10,
                   'rest_from':rest_from if needs_rest else None,'rest_to':rest_to if needs_rest else None,'observations':observations}
-            created=run(lambda:db.create_certificate(UID,patient['id'],data),rerun=False)
+            created=run(lambda:db.create_certificate(UID,patient['id'],data,profile['id'] if profile else None),rerun=False)
             if created:
                 st.session_state.last_certificate=created
                 st.success("Certificado emitido y registrado correctamente.")
@@ -826,7 +843,7 @@ def reports_page(full=False):
             if prepared: st.session_state.backup_zip=prepared
         if st.session_state.get('backup_zip'):
             st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
-        st.caption("El archivo ZIP contiene todas las tablas de la versión 8 y una huella que permite detectar si el respaldo fue alterado o quedó incompleto.")
+        st.caption("El archivo ZIP contiene todas las tablas de la versión 9 y una huella que permite detectar si el respaldo fue alterado o quedó incompleto.")
 
 def financial_page():
     st.title("Facturación y caja")
@@ -903,7 +920,8 @@ def financial_page():
             st.caption("Los servicios generales ya están creados. Coloque sus precios o seleccione “Nuevo servicio” si necesita añadir otro.")
             labels={'Nuevo servicio':None}|{f"{s['code']} · {s['name']}":s for s in services}; selected=labels[st.selectbox("Crear o editar servicio",labels,key='service_edit')]
             with st.form('service_form'):
-                a,b,c=st.columns(3); code=a.text_input("Código *",value=(selected or {}).get('code','')); name=b.text_input("Nombre *",value=(selected or {}).get('name','')); category=c.selectbox("Categoría",['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'],index=['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'].index((selected or {}).get('category','Consulta')) if (selected or {}).get('category','Consulta') in ['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'] else 5)
+                categories=['Consulta','Procedimiento','Laboratorio','Imagen','Terapia / rehabilitación','Insumo','Administrativo / otro']
+                a,b,c=st.columns(3); code=a.text_input("Código *",value=(selected or {}).get('code','')); name=b.text_input("Nombre *",value=(selected or {}).get('name','')); category=c.selectbox("Categoría",categories,index=categories.index((selected or {}).get('category','Consulta')) if (selected or {}).get('category','Consulta') in categories else 6,help="La categoría solo sirve para ordenar servicios y reportes; no cambia el precio ni el cálculo.")
                 description=st.text_area("Descripción para reconocer el servicio",value=(selected or {}).get('description',''))
                 d,e,f=st.columns(3); price=d.number_input("Precio particular",min_value=0.0,value=float((selected or {}).get('base_price',0)),step=1.0); tax=e.number_input("Impuesto %",min_value=0.0,max_value=100.0,value=float((selected or {}).get('tax_rate',0)),step=1.0); active=f.checkbox("Activo",value=(selected or {}).get('active',True))
                 if st.form_submit_button("Guardar servicio",type='primary'): run(lambda:db.save_service(UID,{'code':code,'name':name,'description':description,'category':category,'base_price':price,'tax_rate':tax,'active':active},(selected or {}).get('id'),(selected or {}).get('version')),"Servicio guardado.")
@@ -942,7 +960,7 @@ def financial_page():
 
 def admin_page():
     st.title("Administración")
-    tab1,tab2,tab3=st.tabs(['Actualización de datos anteriores','Reglas clínicas','Registro de actividad'])
+    tab1,tab2,tab3,tab4=st.tabs(['Actualización de datos anteriores','Reglas clínicas','Personalización','Registro de actividad'])
     with tab1:
         counts,archived=legacy_preview(db,UID); st.write("Registros detectados en las tablas anteriores:",counts)
         st.caption("La importación conserva las tablas anteriores, guarda una copia JSON de cada fila y puede repetirse sin duplicar lo ya importado.")
@@ -956,6 +974,19 @@ def admin_page():
         rule=db.settings(UID); labels={'specialty':'Por especialidad','global':'Por historial general'}; choice=st.radio("Cómo asignar C1 / SUB",labels,index=list(labels).index(rule),format_func=lambda x:labels[x])
         if st.button("Guardar regla"): run(lambda:db.settings(UID,choice),"Regla guardada.")
     with tab3:
+        st.subheader("Logo y colores de la clínica")
+        st.caption("Estos cambios modifican únicamente la apariencia. No alteran pacientes, citas ni historias clínicas.")
+        with st.form('branding_form'):
+            clinic_name=st.text_input("Nombre de la clínica",value=brand['name'])
+            x,y=st.columns(2); primary=x.color_picker("Color principal",value=brand['primary']); secondary=y.color_picker("Color secundario",value=brand['secondary'])
+            logo_file=st.file_uploader("Cambiar logo",type=['png','jpg','jpeg'],help="Si no selecciona una imagen se conserva el logo actual.")
+            if st.form_submit_button("Guardar personalización",type='primary'):
+                logo=''
+                if logo_file:
+                    if logo_file.size>1_000_000: st.error("Use una imagen menor a 1 MB.")
+                    else: logo=base64.b64encode(logo_file.getvalue()).decode()
+                if not logo_file or logo: run(lambda:db.save_branding(UID,clinic_name,primary,secondary,logo),"Personalización guardada.")
+    with tab4:
         logs=db.audit_rows(UID); st.dataframe(pd.DataFrame(logs),hide_index=True,use_container_width=True)
 
 try:

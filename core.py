@@ -513,14 +513,15 @@ class Database:
             c.execute('UPDATE appointments SET status=%s,cancel_reason=%s,version=version+1 WHERE id=%s',(status,reason,aid)); self.audit(c,a,'estado_cita','appointments',aid,{'anterior':old['status'],'nuevo':status,'motivo':reason})
     def start_encounter(self,uid,aid):
         with self.tx() as c:
-            a=self.actor(c,uid,['medico']); ap=self.appointment(c,a,aid)
+            a=self.actor(c,uid,['admin','medico']); ap=self.appointment(c,a,aid)
             c.execute('SELECT id FROM encounters WHERE appointment_id=%s',(aid,)); row=c.fetchone()
             if row: return row['id']
             if ap['status'] not in ('Llegó','En atención'): raise AppError('Recepción debe marcar que el paciente llegó.')
             c.execute('SELECT value FROM settings WHERE key=\'consultation_rule\''); rule=c.fetchone()['value']
             filt=' AND specialty=%s' if rule=='specialty' else ''; params=[ap['patient_id']]+([ap['specialty']] if filt else [])
             c.execute("SELECT COUNT(*) AS n FROM encounters WHERE patient_id=%s AND status='Finalizada'"+filt,params); typ='SUB' if c.fetchone()['n'] else 'C1'
-            c.execute("INSERT INTO encounters(patient_id,doctor_id,appointment_id,author_id,specialty,status,consultation_type) VALUES(%s,%s,%s,%s,%s,'Borrador',%s) RETURNING id",(ap['patient_id'],a['doctor_id'],aid,uid,ap['specialty'],typ)); eid=c.fetchone()['id']
+            attending_doctor=ap['doctor_id'] if a['role']=='admin' else a['doctor_id']
+            c.execute("INSERT INTO encounters(patient_id,doctor_id,appointment_id,author_id,specialty,status,consultation_type) VALUES(%s,%s,%s,%s,%s,'Borrador',%s) RETURNING id",(ap['patient_id'],attending_doctor,aid,uid,ap['specialty'],typ)); eid=c.fetchone()['id']
             c.execute("UPDATE appointments SET status='En atención',version=version+1 WHERE id=%s",(aid,)); self.audit(c,a,'abrir_consulta','encounters',eid); return eid
     def encounter(self,uid,eid):
         with self.tx() as c:
@@ -533,7 +534,7 @@ class Database:
     def save_encounter(self,uid,eid,data,version,final=False):
         data=clinical_data(data,final)
         with self.tx() as c:
-            a=self.actor(c,uid,['medico']); c.execute('SELECT * FROM encounters WHERE id=%s FOR UPDATE',(eid,)); old=c.fetchone()
+            a=self.actor(c,uid,['admin','medico']); c.execute('SELECT * FROM encounters WHERE id=%s FOR UPDATE',(eid,)); old=c.fetchone()
             if not old or old['author_id']!=uid or old['status']!='Borrador': raise AppError('Solo el autor puede guardar su borrador.')
             if old['version']!=version: raise AppError('El borrador cambió en otra ventana. Recargue antes de guardar.')
             c.execute("UPDATE encounters SET data=%s,status=%s,version=version+1,finalized_at=CASE WHEN %s THEN now() ELSE NULL END WHERE id=%s",(Json(data),'Finalizada' if final else 'Borrador',final,eid))
@@ -546,7 +547,7 @@ class Database:
             for row in rows:
                 c.execute('SELECT m.*,u.name AS author FROM amendments m JOIN users u ON u.id=m.author_id WHERE encounter_id=%s ORDER BY m.created_at',(row['id'],)); row['amendments']=c.fetchall()
             self.audit(c,a,'consultar_historial','patients',pid); return rows
-    def create_certificate(self,uid,pid,data):
+    def create_certificate(self,uid,pid,data,doctor_id=None):
         institution=clean(data.get('institution')); location=clean(data.get('location'))
         specialty=clean(data.get('specialty')); diagnosis=clean(data.get('diagnosis'))
         cie10=clean(data.get('cie10')).upper(); observations=clean(data.get('observations'))
@@ -555,13 +556,14 @@ class Database:
         if (rest_from and not rest_to) or (rest_to and not rest_from): raise AppError('Complete las dos fechas del reposo médico.')
         if rest_from and rest_to and rest_to<rest_from: raise AppError('La fecha final del reposo no puede ser anterior a la inicial.')
         with self.tx() as c:
-            a=self.actor(c,uid,['medico']); self.patient_scope(c,a,pid,True)
-            c.execute('SELECT * FROM doctors WHERE id=%s AND active',(a['doctor_id'],)); doctor=c.fetchone()
+            a=self.actor(c,uid,['admin','medico']); self.patient_scope(c,a,pid,True)
+            selected_doctor=a['doctor_id'] if a['role']=='medico' else doctor_id
+            c.execute('SELECT * FROM doctors WHERE id=%s AND active',(selected_doctor,)); doctor=c.fetchone()
             if not doctor or not clean(doctor.get('professional_id')) or not clean(doctor.get('registration')):
                 raise AppError('Complete primero su documento y número de registro en “Mi información profesional”.')
             c.execute('''INSERT INTO certificates(patient_id,doctor_id,issued_by,institution,location,specialty,diagnosis,cie10,rest_from,rest_to,observations)
                          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
-                      (pid,a['doctor_id'],uid,institution,location,specialty,diagnosis,cie10,rest_from,rest_to,observations))
+                      (pid,selected_doctor,uid,institution,location,specialty,diagnosis,cie10,rest_from,rest_to,observations))
             certificate_id=c.fetchone()['id']; self.audit(c,a,'emitir_certificado','certificates',certificate_id,{'paciente':pid})
             c.execute('''SELECT c.*,p.name AS patient,p.document,p.birth_date,d.name AS doctor,d.professional_id,d.registration
                          FROM certificates c JOIN patients p ON p.id=c.patient_id JOIN doctors d ON d.id=c.doctor_id WHERE c.id=%s''',(certificate_id,))
@@ -760,6 +762,20 @@ class Database:
             summary=[{'Concepto':'Total facturado válido','Valor':billed},{'Concepto':'Cobros recibidos en el periodo','Valor':collected},{'Concepto':'Egresos registrados','Valor':expenses},{'Concepto':'Flujo neto del periodo','Valor':collected-expenses},{'Concepto':'Saldo pendiente de las cuentas emitidas','Valor':sum((r['Saldo'] for r in accounts if r['Estado']!='Anulada'),Decimal('0'))}]
             self.audit(c,a,'exportar_reporte_financiero','invoices',detail={'desde':first,'hasta':last})
             return {'Resumen':summary,'Cuentas':accounts,'Detalle servicios':details,'Cobros':payments,'Caja':cash}
+    def branding(self,uid):
+        with self.tx() as c:
+            self.actor(c,uid); c.execute("SELECT key,value FROM settings WHERE key IN ('brand_name','brand_primary','brand_secondary','brand_logo')")
+            values={r['key']:r['value'] for r in c.fetchall()}
+            return {'name':values.get('brand_name','Quito Medical Center'),'primary':values.get('brand_primary','#001F5B'),'secondary':values.get('brand_secondary','#008BC4'),'logo':values.get('brand_logo','')}
+    def save_branding(self,uid,name,primary,secondary,logo=''):
+        if not clean(name): raise AppError('Ingrese el nombre de la clínica.')
+        if not re.fullmatch(r'#[0-9A-Fa-f]{6}',primary) or not re.fullmatch(r'#[0-9A-Fa-f]{6}',secondary): raise AppError('Revise los colores seleccionados.')
+        if logo and len(logo)>2_000_000: raise AppError('El logo es demasiado grande. Use una imagen menor a 1 MB.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin']); values={'brand_name':clean(name),'brand_primary':primary,'brand_secondary':secondary}
+            if logo: values['brand_logo']=logo
+            for key,value in values.items(): c.execute('INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',(key,value))
+            self.audit(c,a,'personalizar_clinica','settings')
     def export_event(self,uid,entity,entity_id=None,clinical=False):
         with self.tx() as c:
             a=self.actor(c,uid,['admin','medico'] if clinical else ['admin','secretaria','medico'])
@@ -781,7 +797,7 @@ class Database:
             payload={}
             for table in BACKUP_TABLES:
                 c.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(table))); payload[table]=[dict(r) for r in c.fetchall()]
-        raw=json.dumps({'version':8,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
+        raw=json.dumps({'version':9,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
         out=io.BytesIO()
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
             z.writestr('datos.json',raw); z.writestr('sha256.txt',hashlib.sha256(raw).hexdigest())
@@ -792,7 +808,7 @@ class Database:
             raw=z.read('datos.json')
             if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(),z.read('sha256.txt').decode().strip()): raise AppError('El respaldo está dañado.')
         data=json.loads(raw)
-        if data.get('version')!=8 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
+        if data.get('version')!=9 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
         with self.tx() as c:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
             for table in BACKUP_TABLES:

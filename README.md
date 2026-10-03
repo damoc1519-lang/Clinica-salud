@@ -14,7 +14,7 @@ Este módulo sirve para gestión y conciliación interna. No emite comprobantes
 electrónicos tributarios del SRI: esa etapa exige configurar los datos fiscales
 de cada clínica, firma electrónica, numeración, XML y transmisión/autorización.
 
-### Novedades de la versión 8
+### Novedades de la versión 9
 
 - Retiro inicial del catálogo anterior de médicos, conservando citas e historias.
 - Registro individual e importación de profesionales mediante plantilla Excel.
@@ -22,6 +22,10 @@ de cada clínica, firma electrónica, numeración, XML y transmisión/autorizaci
 - Quince servicios clínicos generales precargados con código y descripción.
 - Reporte financiero Excel con resumen, cuentas, detalle, cobros y caja.
 - Explicación visible del respaldo recuperable y su finalidad.
+- Reinicio único de todos los datos operativos, conservando administradores.
+- Acceso del administrador a Mis citas, atención clínica y certificados.
+- Logo QMC y colores institucionales configurables desde Administración.
+- Mensajes visibles de confirmación después de guardar o registrar.
 
 ## Instalación en Codespaces
 
