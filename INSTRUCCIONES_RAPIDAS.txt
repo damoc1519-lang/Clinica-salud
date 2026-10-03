@@ -15,11 +15,15 @@ MEDISUPORT V2 — PASOS RÁPIDOS
    clínica podrá descargar el expediente completo en Word, Excel y PDF.
 10. Cada médico puede actualizar su documento y registro desde la barra lateral.
     Para ISSFA, configure el convenio para solicitar únicamente fecha de validación.
-11. Ingrese a Facturación y caja > Servicios y tarifarios. Ajuste el precio de
-    consulta, cree los demás servicios y luego registre el precio/copago de cada
-    convenio. Desde Nueva cuenta seleccione una cita: paciente y convenio se
-    cargarán automáticamente.
-12. Las cuentas, cobros y caja son control administrativo interno. Todavía no
+11. En Médicos y horarios registre los profesionales uno por uno o descargue la
+    plantilla para cargarlos mediante Excel. Después cree cuentas de usuario
+    solamente para los profesionales que ingresarán al sistema.
+12. Ingrese a Facturación y caja > Servicios y tarifarios. Los servicios
+    generales ya están creados: revise sus descripciones, coloque los precios y
+    luego registre el precio/copago de cada convenio. Puede añadir otros.
+13. En Facturación y caja > Reporte Excel descargue el archivo financiero con
+    resumen, cuentas, detalle, cobros y movimientos de caja.
+14. Las cuentas, cobros y caja son control administrativo interno. Todavía no
     son facturas electrónicas tributarias autorizadas por el SRI.
 
 Las tablas anteriores se conservan. La versión nueva trabaja dentro del esquema

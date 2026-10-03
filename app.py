@@ -679,14 +679,39 @@ def history_page():
 
 def doctors_page():
     st.title("Médicos y horarios")
-    dm=doctor_map(active=ROLE!='admin')
+    st.caption("Registre cada profesional manualmente o cargue varios desde Excel. Los profesionales retirados anteriormente no aparecen en esta lista.")
+    dm=doctor_map(active=True)
     if ROLE=='admin':
-        with st.expander("Registrar médico"):
+        manual_tab,excel_tab=st.tabs(["Registrar uno","Cargar profesionales desde Excel"])
+        with manual_tab:
             with st.form('new_doctor'):
                 name=st.text_input("Nombre"); specialties=st.text_input("Especialidades separadas por coma"); professional_id=st.text_input("Documento de identificación"); registration=st.text_input("Registro profesional / libro / folio"); slot=st.number_input("Turno predeterminado (minutos)",5,240,30)
                 if st.form_submit_button("Registrar"): run(lambda:db.save_doctor(UID,{'name':name,'specialties':specialties.split(','),'professional_id':professional_id,'registration':registration,'slot_minutes':slot,'active':True}),"Médico registrado.")
+        with excel_tab:
+            st.write("El Excel debe tener estas cinco columnas. En **especialidades** puede escribir varias separadas por coma.")
+            template=[{'nombre':'Ana Pérez López','especialidades':'Medicina general, Medicina familiar','documento':'1712345678','registro_profesional':'MSP-12345','duracion_turno':30}]
+            st.download_button("Descargar plantilla de profesionales",excel({'Profesionales':template}),"Plantilla_profesionales.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key='doctor_template')
+            uploaded=st.file_uploader("Seleccione el Excel completo",type=['xlsx'],key='doctor_excel')
+            if uploaded:
+                try:
+                    frame=pd.read_excel(uploaded,dtype=str).fillna('')
+                    columns={normalized_header(c):c for c in frame.columns}
+                    required=['nombre','especialidades','documento','registro_profesional','duracion_turno']
+                    missing=[x for x in required if x not in columns]
+                    if missing: st.error("Faltan estas columnas: "+", ".join(missing))
+                    else:
+                        rows=[{key:row[columns[key]] for key in required} for _,row in frame.iterrows() if str(row[columns['nombre']]).strip()]
+                        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+                        st.caption(f"Se encontraron {len(rows)} profesional(es). La importación no crea usuarios ni contraseñas.")
+                        if st.button("Importar profesionales",type='primary',disabled=not rows,key='import_doctors'):
+                            result=run(lambda:db.import_doctors(UID,rows),rerun=False)
+                            if result:
+                                st.success(f"Listo: {result['creados']} creados, {result['actualizados']} actualizados y {len(result['errores'])} omitidos.")
+                                if result['errores']: st.warning("\n".join(result['errores'][:20]))
+                                st.rerun()
+                except Exception as exc: fail(AppError(f"No se pudo leer el Excel: {exc}"))
     if not dm: st.info("No hay médicos registrados."); return
-    name=st.selectbox("Médico",list(dm)); d=dm[name]; rules,blocks=db.schedules(UID,d['id'])
+    name=st.selectbox("Médico",list(dm)); d=dm[name]; rules,_=db.schedules(UID,d['id'])
     st.write(pd.DataFrame([{'ID':r['id'],'Día':WEEKDAYS[r['weekday']],'Desde':str(r['start_time'])[:5],'Hasta':str(r['end_time'])[:5]} for r in rules]))
     if ROLE in ('admin','secretaria'):
         with st.form('add_schedule'):
@@ -695,14 +720,6 @@ def doctors_page():
         if rules:
             rid=st.selectbox("Retirar horario",[r['id'] for r in rules],format_func=lambda x:next(f"{WEEKDAYS[r['weekday']]} {str(r['start_time'])[:5]}–{str(r['end_time'])[:5]}" for r in rules if r['id']==x))
             if st.button("Retirar horario seleccionado"): run(lambda:db.remove_schedule(UID,rid),"Horario retirado.")
-        st.subheader("Ausencias y bloqueos")
-        with st.form('block'):
-            day=st.date_input("Fecha",min_value=now().date(),format='DD/MM/YYYY'); a,b=st.columns(2); start=a.time_input("Inicio",time(8)); end=b.time_input("Fin",time(17)); reason=st.text_input("Motivo")
-            if st.form_submit_button("Bloquear"): run(lambda:db.add_block(UID,d['id'],local_datetime(day,start),local_datetime(day,end),reason),"Bloqueo agregado.")
-        if blocks:
-            st.dataframe(pd.DataFrame([{'ID':b['id'],'Desde':fmt_dt(b['start_at']),'Hasta':fmt_dt(b['end_at']),'Motivo':b['reason']} for b in blocks]),hide_index=True)
-            bid=st.selectbox("Retirar bloqueo",[b['id'] for b in blocks]);
-            if st.button("Retirar bloqueo seleccionado"): run(lambda:db.remove_block(UID,bid),"Bloqueo retirado.")
     if ROLE=='admin':
         with st.expander("Editar médico"):
             with st.form('edit_doctor'):
@@ -803,17 +820,18 @@ def reports_page(full=False):
     if st.session_state.get('report_excel'):
         st.download_button("Descargar agenda Excel",st.session_state.report_excel,f"Agenda_{first}_{last}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if full:
+        st.info("¿Qué es el respaldo recuperable? Es una copia de seguridad completa de pacientes, citas, historias, convenios, usuarios y datos financieros. Solo se usa para recuperar la información si la base de datos se daña, se elimina accidentalmente o se traslada a otra instalación. Descárguelo periódicamente y guárdelo en un lugar privado.")
         if st.button("Preparar respaldo recuperable"):
             prepared=run(lambda:db.backup(UID),rerun=False)
             if prepared: st.session_state.backup_zip=prepared
         if st.session_state.get('backup_zip'):
             st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
-        st.caption("El respaldo recuperable contiene todas las tablas de la versión 7 y una huella de integridad.")
+        st.caption("El archivo ZIP contiene todas las tablas de la versión 8 y una huella que permite detectar si el respaldo fue alterado o quedó incompleto.")
 
 def financial_page():
     st.title("Facturación y caja")
     st.caption("Control administrativo de tarifas, cuentas por cobrar, cobros y movimientos. Las cuentas internas no reemplazan una factura electrónica autorizada por el SRI.")
-    tab0,tab1,tab2,tab3,tab4=st.tabs(['Resumen','Nueva cuenta','Cuentas y cobros','Servicios y tarifarios','Caja'])
+    tab0,tab1,tab2,tab3,tab4,tab5=st.tabs(['Resumen','Nueva cuenta','Cuentas y cobros','Servicios y tarifarios','Caja','Reporte Excel'])
     month_start=now().date().replace(day=1)
     with tab0:
         first,last=st.date_input("Periodo",value=(month_start,now().date()),format='DD/MM/YYYY',key='fin_summary_dates')
@@ -879,12 +897,16 @@ def financial_page():
             st.download_button("Descargar cuentas del periodo en Excel",excel({'Cuentas':table}),f"Cuentas_{period[0]}_{period[1]}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key='invoice_excel')
     with tab3:
         services=db.services(UID)
+        st.write("**Servicios generales incluidos**")
+        st.dataframe(pd.DataFrame([{'Código':s['code'],'Servicio':s['name'],'Descripción':s.get('description') or '','Categoría':s['category'],'Precio particular':float(s['base_price']),'Activo':s['active']} for s in services]),hide_index=True,use_container_width=True)
         if ROLE=='admin':
+            st.caption("Los servicios generales ya están creados. Coloque sus precios o seleccione “Nuevo servicio” si necesita añadir otro.")
             labels={'Nuevo servicio':None}|{f"{s['code']} · {s['name']}":s for s in services}; selected=labels[st.selectbox("Crear o editar servicio",labels,key='service_edit')]
             with st.form('service_form'):
                 a,b,c=st.columns(3); code=a.text_input("Código *",value=(selected or {}).get('code','')); name=b.text_input("Nombre *",value=(selected or {}).get('name','')); category=c.selectbox("Categoría",['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'],index=['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'].index((selected or {}).get('category','Consulta')) if (selected or {}).get('category','Consulta') in ['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'] else 5)
+                description=st.text_area("Descripción para reconocer el servicio",value=(selected or {}).get('description',''))
                 d,e,f=st.columns(3); price=d.number_input("Precio particular",min_value=0.0,value=float((selected or {}).get('base_price',0)),step=1.0); tax=e.number_input("Impuesto %",min_value=0.0,max_value=100.0,value=float((selected or {}).get('tax_rate',0)),step=1.0); active=f.checkbox("Activo",value=(selected or {}).get('active',True))
-                if st.form_submit_button("Guardar servicio",type='primary'): run(lambda:db.save_service(UID,{'code':code,'name':name,'category':category,'base_price':price,'tax_rate':tax,'active':active},(selected or {}).get('id'),(selected or {}).get('version')),"Servicio guardado.")
+                if st.form_submit_button("Guardar servicio",type='primary'): run(lambda:db.save_service(UID,{'code':code,'name':name,'description':description,'category':category,'base_price':price,'tax_rate':tax,'active':active},(selected or {}).get('id'),(selected or {}).get('version')),"Servicio guardado.")
             active_agreements=db.agreements(UID,True); active_services=[s for s in services if s['active']]
             if active_agreements and active_services:
                 st.subheader("Tarifa por convenio")
@@ -908,6 +930,15 @@ def financial_page():
             st.dataframe(pd.DataFrame(cash_rows),hide_index=True,use_container_width=True)
             st.download_button("Descargar caja en Excel",excel({'Caja':cash_rows}),f"Caja_{first}_{last}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key='cash_excel')
         else: st.info("No hay movimientos de caja en este periodo.")
+    with tab5:
+        st.subheader("Reporte financiero para Excel")
+        st.write("Descarga un solo archivo con cinco hojas: **Resumen, Cuentas, Detalle de servicios, Cobros y Caja**. Puede entregarse al administrador o contador para revisión y registro.")
+        report_period=st.date_input("Periodo del reporte financiero",value=(month_start,now().date()),format='DD/MM/YYYY',key='financial_report_dates')
+        if st.button("Preparar reporte financiero Excel",type='primary',key='prepare_financial_excel'):
+            prepared=run(lambda:excel(db.financial_report(UID,report_period[0],report_period[1])),rerun=False)
+            if prepared: st.session_state.financial_excel=prepared
+        if st.session_state.get('financial_excel'):
+            st.download_button("Descargar reporte financiero Excel",st.session_state.financial_excel,f"Reporte_financiero_{report_period[0]}_{report_period[1]}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key='download_financial_excel')
 
 def admin_page():
     st.title("Administración")

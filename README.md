@@ -14,6 +14,15 @@ Este módulo sirve para gestión y conciliación interna. No emite comprobantes
 electrónicos tributarios del SRI: esa etapa exige configurar los datos fiscales
 de cada clínica, firma electrónica, numeración, XML y transmisión/autorización.
 
+### Novedades de la versión 8
+
+- Retiro inicial del catálogo anterior de médicos, conservando citas e historias.
+- Registro individual e importación de profesionales mediante plantilla Excel.
+- Pantalla de horarios simplificada, sin ausencias ni bloqueos.
+- Quince servicios clínicos generales precargados con código y descripción.
+- Reporte financiero Excel con resumen, cuentas, detalle, cobros y caja.
+- Explicación visible del respaldo recuperable y su finalidad.
+
 ## Instalación en Codespaces
 
 1. Haga una copia del proyecto actual.

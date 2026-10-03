@@ -265,6 +265,28 @@ class Database:
             else:
                 c.execute('INSERT INTO doctors(name,specialties,slot_minutes,professional_id,registration) VALUES(%s,%s,%s,%s,%s) RETURNING id',(name,specialties,data['slot_minutes'],clean(data.get('professional_id')),clean(data.get('registration')))); target=c.fetchone()['id']
             self.audit(c,a,'guardar_medico','doctors',target)
+    def import_doctors(self,uid,rows):
+        if not rows: raise AppError('El archivo no contiene profesionales para importar.')
+        created=updated=0; errors=[]
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin'])
+            for index,row in enumerate(rows,start=2):
+                name=proper_name(row.get('nombre')); raw_specialties=clean(row.get('especialidades'))
+                specialties=[clean(x).capitalize() for x in re.split(r'[,;]',raw_specialties) if clean(x)]
+                try: slot=int(float(row.get('duracion_turno') or 30))
+                except (ValueError,TypeError): slot=0
+                if not name or not specialties or not 5<=slot<=240:
+                    errors.append(f'Fila {index}: complete nombre, especialidades y duración entre 5 y 240 minutos.'); continue
+                c.execute('SELECT id FROM doctors WHERE lower(name)=lower(%s)',(name,)); existing=c.fetchone()
+                if existing:
+                    c.execute('''UPDATE doctors SET specialties=%s,professional_id=%s,registration=%s,slot_minutes=%s,
+                                 active=TRUE,version=version+1 WHERE id=%s''',(specialties,clean(row.get('documento')),clean(row.get('registro_profesional')),slot,existing['id'])); updated+=1
+                else:
+                    c.execute('''INSERT INTO doctors(name,specialties,professional_id,registration,slot_minutes,active)
+                                 VALUES(%s,%s,%s,%s,%s,TRUE)''',(name,specialties,clean(row.get('documento')),clean(row.get('registro_profesional')),slot)); created+=1
+            if not created and not updated: raise AppError(errors[0] if errors else 'No se pudo importar ningún profesional.')
+            self.audit(c,a,'importar_medicos','doctors',detail={'creados':created,'actualizados':updated,'omitidos':len(errors)})
+        return {'creados':created,'actualizados':updated,'errores':errors}
     def update_my_professional(self,uid,professional_id,registration):
         with self.tx() as c:
             a=self.actor(c,uid,['medico'])
@@ -566,20 +588,20 @@ class Database:
             c.execute('SELECT * FROM services WHERE (%s OR active) ORDER BY active DESC,category,name',(active_only,))
             return c.fetchall()
     def save_service(self,uid,data,target=None,version=None):
-        code=clean(data.get('code')).upper(); name=clean(data.get('name')); category=clean(data.get('category')) or 'Otro'
+        code=clean(data.get('code')).upper(); name=clean(data.get('name')); description=clean(data.get('description')); category=clean(data.get('category')) or 'Otro'
         try: price=Decimal(str(data.get('base_price') or 0)); tax=Decimal(str(data.get('tax_rate') or 0))
         except Exception: raise AppError('Revise el precio y el porcentaje de impuesto.')
         if not code or not name or price<0 or not 0<=tax<=100: raise AppError('Complete correctamente el código, nombre, precio e impuesto.')
         with self.tx() as c:
             a=self.actor(c,uid,['admin'])
             if target:
-                c.execute('''UPDATE services SET code=%s,name=%s,category=%s,base_price=%s,tax_rate=%s,active=%s,
+                c.execute('''UPDATE services SET code=%s,name=%s,description=%s,category=%s,base_price=%s,tax_rate=%s,active=%s,
                              version=version+1,updated_at=now() WHERE id=%s AND version=%s RETURNING id''',
-                          (code,name,category,price,tax,bool(data.get('active',True)),target,version))
+                          (code,name,description,category,price,tax,bool(data.get('active',True)),target,version))
                 if not c.fetchone(): raise AppError('El servicio cambió en otra sesión. Actualice la pantalla.')
             else:
-                c.execute('''INSERT INTO services(code,name,category,base_price,tax_rate,active)
-                             VALUES(%s,%s,%s,%s,%s,%s) RETURNING id''',(code,name,category,price,tax,bool(data.get('active',True))))
+                c.execute('''INSERT INTO services(code,name,description,category,base_price,tax_rate,active)
+                             VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id''',(code,name,description,category,price,tax,bool(data.get('active',True))))
                 target=c.fetchone()['id']
             self.audit(c,a,'guardar_servicio','services',target)
     def tariffs(self,uid,agreement_id=None):
@@ -708,6 +730,36 @@ class Database:
                 WHERE i.issue_date BETWEEN %s AND %s''',(parse_date(first),parse_date(last))); totals=c.fetchone()
             c.execute("SELECT COALESCE(SUM(amount),0) AS collected FROM payments WHERE payment_date BETWEEN %s AND %s",(parse_date(first),parse_date(last))); totals['collected']=c.fetchone()['collected']
             c.execute("SELECT COALESCE(SUM(amount),0) AS expenses FROM cash_movements WHERE movement_date BETWEEN %s AND %s AND movement_type='Egreso'",(parse_date(first),parse_date(last))); totals['expenses']=c.fetchone()['expenses']; return totals
+    def financial_report(self,uid,first,last):
+        first=parse_date(first); last=parse_date(last)
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin','secretaria'])
+            c.execute('''SELECT i.number AS "Cuenta",i.issue_date AS "Fecha",p.document AS "Documento",p.name AS "Paciente",
+                                COALESCE(a.name,'Particular') AS "Convenio",i.due_date AS "Vencimiento",i.subtotal AS "Subtotal",
+                                i.discount AS "Descuento",i.tax AS "Impuesto",i.total AS "Total",
+                                COALESCE(SUM(py.amount),0) AS "Cobrado",i.total-COALESCE(SUM(py.amount),0) AS "Saldo",
+                                i.patient_responsibility AS "Responsabilidad paciente",i.agreement_responsibility AS "Responsabilidad convenio",i.status AS "Estado"
+                         FROM invoices i JOIN patients p ON p.id=i.patient_id LEFT JOIN agreements a ON a.id=i.agreement_id
+                         LEFT JOIN payments py ON py.invoice_id=i.id WHERE i.issue_date BETWEEN %s AND %s
+                         GROUP BY i.id,p.document,p.name,a.name ORDER BY i.issue_date,i.id''',(first,last)); accounts=[dict(r) for r in c.fetchall()]
+            c.execute('''SELECT i.number AS "Cuenta",i.issue_date AS "Fecha",p.name AS "Paciente",COALESCE(a.name,'Particular') AS "Convenio",
+                                d.description AS "Servicio",d.quantity AS "Cantidad",d.unit_price AS "Precio unitario",d.discount AS "Descuento",
+                                d.tax AS "Impuesto",d.total AS "Total línea"
+                         FROM invoice_items d JOIN invoices i ON i.id=d.invoice_id JOIN patients p ON p.id=i.patient_id
+                         LEFT JOIN agreements a ON a.id=i.agreement_id WHERE i.issue_date BETWEEN %s AND %s ORDER BY i.issue_date,i.id,d.id''',(first,last)); details=[dict(r) for r in c.fetchall()]
+            c.execute('''SELECT py.payment_date AS "Fecha",i.number AS "Cuenta",p.document AS "Documento",p.name AS "Paciente",
+                                COALESCE(a.name,'Particular') AS "Convenio",py.amount AS "Valor",py.method AS "Método",
+                                py.reference AS "Referencia",py.notes AS "Nota"
+                         FROM payments py JOIN invoices i ON i.id=py.invoice_id JOIN patients p ON p.id=i.patient_id
+                         LEFT JOIN agreements a ON a.id=i.agreement_id WHERE py.payment_date BETWEEN %s AND %s ORDER BY py.payment_date,py.id''',(first,last)); payments=[dict(r) for r in c.fetchall()]
+            c.execute('''SELECT m.movement_date AS "Fecha",m.movement_type AS "Tipo",m.category AS "Categoría",m.description AS "Descripción",
+                                m.amount AS "Valor",m.method AS "Método",m.reference AS "Referencia",i.number AS "Cuenta",u.name AS "Registrado por"
+                         FROM cash_movements m LEFT JOIN invoices i ON i.id=m.invoice_id JOIN users u ON u.id=m.created_by
+                         WHERE m.movement_date BETWEEN %s AND %s ORDER BY m.movement_date,m.id''',(first,last)); cash=[dict(r) for r in c.fetchall()]
+            billed=sum((r['Total'] for r in accounts if r['Estado']!='Anulada'),Decimal('0')); collected=sum((r['Valor'] for r in payments),Decimal('0')); expenses=sum((r['Valor'] for r in cash if r['Tipo']=='Egreso'),Decimal('0'))
+            summary=[{'Concepto':'Total facturado válido','Valor':billed},{'Concepto':'Cobros recibidos en el periodo','Valor':collected},{'Concepto':'Egresos registrados','Valor':expenses},{'Concepto':'Flujo neto del periodo','Valor':collected-expenses},{'Concepto':'Saldo pendiente de las cuentas emitidas','Valor':sum((r['Saldo'] for r in accounts if r['Estado']!='Anulada'),Decimal('0'))}]
+            self.audit(c,a,'exportar_reporte_financiero','invoices',detail={'desde':first,'hasta':last})
+            return {'Resumen':summary,'Cuentas':accounts,'Detalle servicios':details,'Cobros':payments,'Caja':cash}
     def export_event(self,uid,entity,entity_id=None,clinical=False):
         with self.tx() as c:
             a=self.actor(c,uid,['admin','medico'] if clinical else ['admin','secretaria','medico'])
@@ -729,7 +781,7 @@ class Database:
             payload={}
             for table in BACKUP_TABLES:
                 c.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(table))); payload[table]=[dict(r) for r in c.fetchall()]
-        raw=json.dumps({'version':7,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
+        raw=json.dumps({'version':8,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
         out=io.BytesIO()
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
             z.writestr('datos.json',raw); z.writestr('sha256.txt',hashlib.sha256(raw).hexdigest())
@@ -740,7 +792,7 @@ class Database:
             raw=z.read('datos.json')
             if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(),z.read('sha256.txt').decode().strip()): raise AppError('El respaldo está dañado.')
         data=json.loads(raw)
-        if data.get('version')!=7 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
+        if data.get('version')!=8 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
         with self.tx() as c:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
             for table in BACKUP_TABLES:

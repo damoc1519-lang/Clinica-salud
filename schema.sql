@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT INTO settings VALUES ('schema_version','2'),('consultation_rule','specialty')
  ON CONFLICT DO NOTHING;
-UPDATE settings SET value='7' WHERE key='schema_version';
+UPDATE settings SET value='8' WHERE key='schema_version';
 CREATE TABLE IF NOT EXISTS doctors (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  specialties TEXT[] NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -33,6 +33,16 @@ CREATE TABLE IF NOT EXISTS login_attempts (
  attempted_at TIMESTAMPTZ NOT NULL DEFAULT now(), success BOOLEAN NOT NULL
 );
 CREATE INDEX IF NOT EXISTS login_recent ON login_attempts(username,attempted_at);
+-- Al instalar la versión 8 se retira una sola vez el catálogo anterior de
+-- médicos. No se eliminan filas porque historias, citas y certificados deben
+-- conservar el profesional que los atendió.
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM settings WHERE key='doctor_catalog_reset_v8') THEN
+  UPDATE users SET active=FALSE,auth_version=auth_version+1 WHERE role='medico';
+  UPDATE doctors SET active=FALSE,version=version+1;
+  INSERT INTO settings(key,value) VALUES('doctor_catalog_reset_v8','completed');
+ END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS patients (
  id BIGSERIAL PRIMARY KEY, document TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
  apellido1 TEXT, apellido2 TEXT, nombre1 TEXT, nombre2 TEXT,
@@ -125,14 +135,29 @@ CREATE INDEX IF NOT EXISTS certificate_doctor_idx ON certificates(doctor_id,issu
 -- comprobante electrónico autorizado por el SRI.
 CREATE TABLE IF NOT EXISTS services (
  id BIGSERIAL PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
- category TEXT NOT NULL DEFAULT 'Consulta', base_price NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK(base_price>=0),
+ description TEXT, category TEXT NOT NULL DEFAULT 'Consulta', base_price NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK(base_price>=0),
  tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK(tax_rate BETWEEN 0 AND 100),
  active BOOLEAN NOT NULL DEFAULT TRUE, version INT NOT NULL DEFAULT 1,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO services(code,name,category,base_price,tax_rate)
- VALUES('CONS-GEN','Consulta médica general','Consulta',0,0)
- ON CONFLICT(code) DO NOTHING;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS description TEXT;
+INSERT INTO services(code,name,description,category,base_price,tax_rate) VALUES
+ ('CONS-GEN','Consulta médica general','Valoración médica general inicial o atención por enfermedad común.','Consulta',0,0),
+ ('CONS-ESP','Consulta médica especializada','Valoración realizada por un profesional de una especialidad médica.','Consulta',0,0),
+ ('CONS-CTL','Consulta de control','Seguimiento posterior de una consulta, tratamiento o procedimiento.','Consulta',0,0),
+ ('EMER-001','Atención de emergencia','Evaluación y atención inmediata de una condición urgente.','Consulta',0,0),
+ ('ECO-001','Ecografía','Estudio diagnóstico mediante ultrasonido; especifique el tipo en la cuenta.','Imagen',0,0),
+ ('RX-001','Radiografía','Estudio radiológico; especifique la región examinada en la cuenta.','Imagen',0,0),
+ ('LAB-001','Exámenes de laboratorio','Pruebas de laboratorio clínico; detalle los exámenes realizados.','Laboratorio',0,0),
+ ('CUR-001','Curación','Limpieza, tratamiento y cobertura de heridas.','Procedimiento',0,0),
+ ('INY-001','Aplicación de medicamento','Administración de medicamento por vía indicada por el profesional.','Procedimiento',0,0),
+ ('PROC-001','Procedimiento médico menor','Procedimiento ambulatorio menor; detalle cuál se realizó.','Procedimiento',0,0),
+ ('CERT-001','Certificado médico','Emisión de certificado médico cuando corresponda legal y clínicamente.','Otro',0,0),
+ ('TER-001','Sesión de terapia','Sesión individual de terapia o rehabilitación.','Procedimiento',0,0),
+ ('ENF-001','Atención de enfermería','Servicio independiente realizado por personal de enfermería.','Procedimiento',0,0),
+ ('DOM-001','Visita domiciliaria','Atención de un profesional de salud en el domicilio del paciente.','Consulta',0,0),
+ ('TEL-001','Teleconsulta','Atención profesional realizada mediante videollamada o medio remoto.','Consulta',0,0)
+ ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,category=EXCLUDED.category,active=TRUE;
 CREATE TABLE IF NOT EXISTS agreement_tariffs (
  agreement_id BIGINT NOT NULL REFERENCES agreements(id),
  service_id BIGINT NOT NULL REFERENCES services(id),
