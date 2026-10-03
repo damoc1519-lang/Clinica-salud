@@ -596,3 +596,24 @@ def excel(sheets):
             sheet.sheet_properties.pageSetUpPr.fitToPage=True
             sheet.auto_filter.ref=sheet.dimensions
     return out.getvalue()
+
+def billing_statement_pdf(inv):
+    """Estado de cuenta imprimible; expresamente no es comprobante tributario."""
+    out=io.BytesIO(); doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=1.6*cm,leftMargin=1.6*cm,topMargin=1.5*cm,bottomMargin=1.5*cm)
+    styles=getSampleStyleSheet(); title=ParagraphStyle('BillTitle',parent=styles['Title'],textColor=colors.HexColor('#0F4C5C'),fontSize=18,leading=22)
+    normal=ParagraphStyle('BillBody',parent=styles['BodyText'],fontSize=9.5,leading=13)
+    story=[Paragraph('MEDISUPORT',title),Paragraph('ESTADO DE CUENTA INTERNO · NO ES COMPROBANTE TRIBUTARIO',styles['Heading3']),Spacer(1,8)]
+    head=[[Paragraph('<b>Cuenta</b>',normal),inv.get('number',''),Paragraph('<b>Fecha</b>',normal),pretty(inv.get('issue_date'))],
+          [Paragraph('<b>Paciente</b>',normal),proper_name(inv.get('patient')),Paragraph('<b>Documento</b>',normal),str(inv.get('document') or '')],
+          [Paragraph('<b>Convenio</b>',normal),inv.get('agreement') or 'Particular',Paragraph('<b>Vencimiento</b>',normal),pretty(inv.get('due_date'))]]
+    table=Table(head,colWidths=[2.6*cm,6.0*cm,2.6*cm,5.0*cm]); table.setStyle(TableStyle([('GRID',(0,0),(-1,-1),.4,colors.HexColor('#DCE7EC')),('BACKGROUND',(0,0),(0,-1),colors.HexColor('#EAF4F5')),('BACKGROUND',(2,0),(2,-1),colors.HexColor('#EAF4F5')),('VALIGN',(0,0),(-1,-1),'MIDDLE'),('PADDING',(0,0),(-1,-1),6)])); story += [table,Spacer(1,12)]
+    rows=[['Servicio','Cant.','P. unitario','Descuento','Impuesto','Total']]
+    for item in inv.get('items',[]): rows.append([item['description'],f"{item['quantity']:.2f}",f"${item['unit_price']:,.2f}",f"${item['discount']:,.2f}",f"${item['tax']:,.2f}",f"${item['total']:,.2f}"])
+    details=Table(rows,colWidths=[6.6*cm,1.6*cm,2.7*cm,2.4*cm,2.2*cm,2.4*cm],repeatRows=1)
+    details.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#0F4C5C')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('ALIGN',(1,1),(-1,-1),'RIGHT'),('GRID',(0,0),(-1,-1),.35,colors.HexColor('#DCE7EC')),('VALIGN',(0,0),(-1,-1),'TOP'),('FONTSIZE',(0,0),(-1,-1),8.5),('PADDING',(0,0),(-1,-1),5)])); story += [details,Spacer(1,10)]
+    paid=inv.get('paid') or Decimal('0'); balance=inv['total']-paid
+    totals=[['Subtotal',f"${inv['subtotal']:,.2f}"],['Descuento',f"-${inv['discount']:,.2f}"],['Impuesto',f"${inv['tax']:,.2f}"],['TOTAL',f"${inv['total']:,.2f}"],['Cobrado',f"${paid:,.2f}"],['SALDO',f"${balance:,.2f}"]]
+    summary=Table(totals,colWidths=[3.4*cm,3.2*cm],hAlign='RIGHT'); summary.setStyle(TableStyle([('ALIGN',(1,0),(1,-1),'RIGHT'),('FONTNAME',(0,3),(-1,3),'Helvetica-Bold'),('FONTNAME',(0,-1),(-1,-1),'Helvetica-Bold'),('LINEABOVE',(0,3),(-1,3),.7,colors.HexColor('#0F4C5C')),('BACKGROUND',(0,-1),(-1,-1),colors.HexColor('#EAF4F5')),('PADDING',(0,0),(-1,-1),5)])); story += [summary,Spacer(1,8)]
+    story.append(Paragraph(f"Responsabilidad del paciente: ${inv['patient_responsibility']:,.2f} · Responsabilidad del convenio: ${inv['agreement_responsibility']:,.2f}",normal))
+    if inv.get('notes'): story += [Spacer(1,6),Paragraph('<b>Observaciones:</b> '+escape(inv['notes']).replace(chr(10),'<br/>'),normal)]
+    doc.build(story); return out.getvalue()

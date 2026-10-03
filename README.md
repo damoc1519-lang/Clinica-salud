@@ -3,6 +3,17 @@
 Sistema clínico en Streamlit con PostgreSQL/Supabase. Esta versión usa el esquema
 `medisuport` y conserva intactas las tablas anteriores del esquema `public`.
 
+## Módulo financiero administrativo
+
+La versión 7 incorpora servicios y precios particulares, tarifarios específicos
+por convenio, copagos, emisión de cuentas desde una cita, cuentas por cobrar,
+abonos, movimientos de caja y exportaciones a Excel. La cita transmite
+automáticamente paciente y convenio a la cuenta para evitar doble digitación.
+
+Este módulo sirve para gestión y conciliación interna. No emite comprobantes
+electrónicos tributarios del SRI: esa etapa exige configurar los datos fiscales
+de cada clínica, firma electrónica, numeración, XML y transmisión/autorización.
+
 ## Instalación en Codespaces
 
 1. Haga una copia del proyecto actual.

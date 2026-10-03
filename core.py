@@ -15,7 +15,7 @@ TZ = ZoneInfo('America/Guayaquil')
 STATUSES = ['Pendiente','Confirmada','Llegó','En atención','Atendida','Cancelada','No asistió']
 INACTIVE = ['Cancelada','No asistió']
 WEEKDAYS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
-BACKUP_TABLES = ['settings','doctors','users','patients','agreements','patient_agreements','availability','blocks','appointments','encounters','amendments','certificates','audit','legacy_archive']
+BACKUP_TABLES = ['settings','doctors','users','patients','agreements','patient_agreements','availability','blocks','appointments','encounters','amendments','certificates','services','agreement_tariffs','invoices','invoice_items','payments','cash_movements','audit','legacy_archive']
 class AppError(Exception): pass
 
 def now(): return datetime.now(TZ)
@@ -560,6 +560,154 @@ class Database:
             a=self.actor(c,uid,['medico']); c.execute('SELECT * FROM encounters WHERE id=%s FOR UPDATE',(eid,)); r=c.fetchone()
             if not r or r['author_id']!=uid or r['status']!='Finalizada': raise AppError('Solo el autor puede añadir una corrección a su consulta finalizada.')
             c.execute('INSERT INTO amendments(encounter_id,author_id,reason,text) VALUES(%s,%s,%s,%s)',(eid,uid,reason,text)); self.audit(c,a,'anotar_correccion','encounters',eid)
+    def services(self,uid,active_only=False):
+        with self.tx() as c:
+            self.actor(c,uid,['admin','secretaria'])
+            c.execute('SELECT * FROM services WHERE (%s OR active) ORDER BY active DESC,category,name',(active_only,))
+            return c.fetchall()
+    def save_service(self,uid,data,target=None,version=None):
+        code=clean(data.get('code')).upper(); name=clean(data.get('name')); category=clean(data.get('category')) or 'Otro'
+        try: price=Decimal(str(data.get('base_price') or 0)); tax=Decimal(str(data.get('tax_rate') or 0))
+        except Exception: raise AppError('Revise el precio y el porcentaje de impuesto.')
+        if not code or not name or price<0 or not 0<=tax<=100: raise AppError('Complete correctamente el código, nombre, precio e impuesto.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin'])
+            if target:
+                c.execute('''UPDATE services SET code=%s,name=%s,category=%s,base_price=%s,tax_rate=%s,active=%s,
+                             version=version+1,updated_at=now() WHERE id=%s AND version=%s RETURNING id''',
+                          (code,name,category,price,tax,bool(data.get('active',True)),target,version))
+                if not c.fetchone(): raise AppError('El servicio cambió en otra sesión. Actualice la pantalla.')
+            else:
+                c.execute('''INSERT INTO services(code,name,category,base_price,tax_rate,active)
+                             VALUES(%s,%s,%s,%s,%s,%s) RETURNING id''',(code,name,category,price,tax,bool(data.get('active',True))))
+                target=c.fetchone()['id']
+            self.audit(c,a,'guardar_servicio','services',target)
+    def tariffs(self,uid,agreement_id=None):
+        with self.tx() as c:
+            self.actor(c,uid,['admin','secretaria']); args=[]; clause=''
+            if agreement_id: clause=' WHERE t.agreement_id=%s'; args=[agreement_id]
+            c.execute('''SELECT t.*,a.name AS agreement,s.code,s.name AS service,s.category,s.base_price
+                         FROM agreement_tariffs t JOIN agreements a ON a.id=t.agreement_id JOIN services s ON s.id=t.service_id'''+clause+' ORDER BY a.name,s.name',args)
+            return c.fetchall()
+    def save_tariff(self,uid,agreement_id,service_id,agreed_price,patient_copay,active=True):
+        try: price=Decimal(str(agreed_price)); copay=Decimal(str(patient_copay))
+        except Exception: raise AppError('Revise la tarifa y el copago.')
+        if price<0 or copay<0 or copay>price: raise AppError('El copago debe estar entre cero y la tarifa convenida.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin'])
+            c.execute('''INSERT INTO agreement_tariffs(agreement_id,service_id,agreed_price,patient_copay,active)
+                         VALUES(%s,%s,%s,%s,%s) ON CONFLICT(agreement_id,service_id) DO UPDATE SET
+                         agreed_price=EXCLUDED.agreed_price,patient_copay=EXCLUDED.patient_copay,active=EXCLUDED.active,updated_at=now()''',
+                      (agreement_id,service_id,price,copay,active))
+            self.audit(c,a,'guardar_tarifa','agreements',agreement_id,{'servicio':service_id})
+    def billable_appointments(self,uid,days=180):
+        with self.tx() as c:
+            self.actor(c,uid,['admin','secretaria'])
+            c.execute('''SELECT x.id,x.patient_id,x.agreement_id,x.start_at,x.status,p.name AS patient,p.document,
+                                d.name AS doctor,x.specialty,a.name AS agreement
+                         FROM appointments x JOIN patients p ON p.id=x.patient_id JOIN doctors d ON d.id=x.doctor_id
+                         LEFT JOIN agreements a ON a.id=x.agreement_id LEFT JOIN invoices i ON i.appointment_id=x.id
+                         WHERE x.start_at>=now()-(%s || ' days')::interval AND x.status NOT IN ('Cancelada','No asistió') AND i.id IS NULL
+                         ORDER BY x.start_at DESC''',(int(days),)); return c.fetchall()
+    def create_invoice(self,uid,appointment_id,items,due_date=None,notes=''):
+        if not items: raise AppError('Seleccione al menos un servicio para facturar.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin','secretaria'])
+            c.execute('''SELECT x.*,p.name AS patient,a.name AS agreement FROM appointments x
+                         JOIN patients p ON p.id=x.patient_id LEFT JOIN agreements a ON a.id=x.agreement_id
+                         WHERE x.id=%s FOR UPDATE''',(appointment_id,)); ap=c.fetchone()
+            if not ap: raise AppError('La cita ya no existe.')
+            c.execute('SELECT id FROM invoices WHERE appointment_id=%s',(appointment_id,))
+            if c.fetchone(): raise AppError('Esta cita ya tiene una cuenta emitida.')
+            prepared=[]; subtotal=discount=tax_total=total=patient_total=Decimal('0.00')
+            for raw in items:
+                sid=int(raw['service_id']); qty=Decimal(str(raw.get('quantity') or 1)); line_discount=Decimal(str(raw.get('discount') or 0))
+                if qty<=0 or line_discount<0: raise AppError('Revise cantidades y descuentos.')
+                c.execute('''SELECT s.*,t.agreed_price,t.patient_copay FROM services s LEFT JOIN agreement_tariffs t
+                             ON t.service_id=s.id AND t.agreement_id=%s AND t.active WHERE s.id=%s AND s.active''',(ap['agreement_id'],sid)); svc=c.fetchone()
+                if not svc: raise AppError('Uno de los servicios ya no está disponible.')
+                unit=svc['agreed_price'] if ap['agreement_id'] and svc['agreed_price'] is not None else svc['base_price']
+                base=(unit*qty).quantize(Decimal('.01')); line_discount=min(line_discount,base); taxable=base-line_discount
+                line_tax=(taxable*svc['tax_rate']/Decimal('100')).quantize(Decimal('.01')); line_total=taxable+line_tax
+                copay=(svc['patient_copay']*qty).quantize(Decimal('.01')) if ap['agreement_id'] and svc['patient_copay'] is not None else line_total
+                copay=min(copay,line_total)
+                prepared.append((sid,svc['name'],qty,unit,line_discount,svc['tax_rate'],taxable,line_tax,line_total,copay))
+                subtotal+=base; discount+=line_discount; tax_total+=line_tax; total+=line_total; patient_total+=copay
+            agreement_total=total-patient_total
+            c.execute('''INSERT INTO invoices(appointment_id,patient_id,agreement_id,due_date,subtotal,discount,tax,total,
+                         patient_responsibility,agreement_responsibility,notes,created_by)
+                         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id''',
+                      (appointment_id,ap['patient_id'],ap['agreement_id'],parse_date(due_date) or now().date(),subtotal,discount,tax_total,total,patient_total,agreement_total,clean(notes),uid))
+            iid=c.fetchone()['id']; number=f'CTA-{now().year}-{iid:06d}'; c.execute('UPDATE invoices SET number=%s WHERE id=%s',(number,iid))
+            for sid,description,qty,unit,disc,rate,base,line_tax,line_total,_ in prepared:
+                c.execute('''INSERT INTO invoice_items(invoice_id,service_id,description,quantity,unit_price,discount,tax_rate,subtotal,tax,total)
+                             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',(iid,sid,description,qty,unit,disc,rate,base,line_tax,line_total))
+            self.audit(c,a,'emitir_cuenta','invoices',iid,{'cita':appointment_id,'total':str(total)}); return iid
+    def invoices(self,uid,first=None,last=None,status=None):
+        with self.tx() as c:
+            self.actor(c,uid,['admin','secretaria']); where=[]; args=[]
+            if first: where.append('i.issue_date>=%s'); args.append(parse_date(first))
+            if last: where.append('i.issue_date<=%s'); args.append(parse_date(last))
+            if status and status!='Todos': where.append('i.status=%s'); args.append(status)
+            clause=(' WHERE '+' AND '.join(where)) if where else ''
+            c.execute('''SELECT i.*,p.name AS patient,p.document,a.name AS agreement,COALESCE(SUM(py.amount),0) AS paid,
+                                i.total-COALESCE(SUM(py.amount),0) AS balance
+                         FROM invoices i JOIN patients p ON p.id=i.patient_id LEFT JOIN agreements a ON a.id=i.agreement_id
+                         LEFT JOIN payments py ON py.invoice_id=i.id'''+clause+''' GROUP BY i.id,p.name,p.document,a.name
+                         ORDER BY i.issue_date DESC,i.id DESC LIMIT 1000''',args); return c.fetchall()
+    def invoice_detail(self,uid,invoice_id):
+        with self.tx() as c:
+            self.actor(c,uid,['admin','secretaria'])
+            c.execute('''SELECT i.*,p.name AS patient,p.document,p.phone,p.email,a.name AS agreement,
+                                COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id=i.id),0) AS paid
+                         FROM invoices i JOIN patients p ON p.id=i.patient_id LEFT JOIN agreements a ON a.id=i.agreement_id WHERE i.id=%s''',(invoice_id,)); inv=c.fetchone()
+            if not inv: raise AppError('La cuenta no existe.')
+            c.execute('SELECT * FROM invoice_items WHERE invoice_id=%s ORDER BY id',(invoice_id,)); inv['items']=c.fetchall()
+            c.execute('SELECT * FROM payments WHERE invoice_id=%s ORDER BY payment_date,id',(invoice_id,)); inv['payments']=c.fetchall(); return inv
+    def add_payment(self,uid,invoice_id,amount,method,reference='',notes='',payment_date=None):
+        try: amount=Decimal(str(amount))
+        except Exception: raise AppError('Revise el valor del cobro.')
+        if amount<=0 or method not in ('Efectivo','Tarjeta','Transferencia','Cheque','Otro'): raise AppError('Revise el valor y método de cobro.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin','secretaria']); c.execute('SELECT * FROM invoices WHERE id=%s FOR UPDATE',(invoice_id,)); inv=c.fetchone()
+            if not inv or inv['status']=='Anulada': raise AppError('La cuenta no existe o está anulada.')
+            c.execute('SELECT COALESCE(SUM(amount),0) AS paid FROM payments WHERE invoice_id=%s',(invoice_id,)); balance=inv['total']-c.fetchone()['paid']
+            if amount>balance: raise AppError(f'El cobro supera el saldo pendiente de ${balance:.2f}.')
+            day=parse_date(payment_date) or now().date()
+            c.execute('INSERT INTO payments(invoice_id,payment_date,amount,method,reference,notes,received_by) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id',(invoice_id,day,amount,method,clean(reference),clean(notes),uid)); pid=c.fetchone()['id']
+            c.execute("UPDATE invoices SET status=CASE WHEN %s=%s THEN 'Pagada' ELSE 'Parcial' END,updated_at=now() WHERE id=%s",(amount,balance,invoice_id))
+            c.execute("INSERT INTO cash_movements(movement_date,movement_type,category,description,amount,method,reference,invoice_id,created_by) VALUES(%s,'Ingreso','Cobro de cuenta',%s,%s,%s,%s,%s,%s)",(day,'Cobro '+inv['number'],amount,method,clean(reference),invoice_id,uid))
+            self.audit(c,a,'registrar_cobro','payments',pid,{'cuenta':invoice_id,'valor':str(amount)})
+    def annul_invoice(self,uid,invoice_id,reason):
+        if len(clean(reason))<5: raise AppError('Indique el motivo de la anulación.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin']); c.execute('SELECT * FROM invoices WHERE id=%s FOR UPDATE',(invoice_id,)); inv=c.fetchone()
+            if not inv or inv['status']=='Anulada': raise AppError('La cuenta no existe o ya fue anulada.')
+            c.execute('SELECT EXISTS(SELECT 1 FROM payments WHERE invoice_id=%s) AS paid',(invoice_id,))
+            if c.fetchone()['paid']: raise AppError('No se puede anular una cuenta con cobros. Registre la devolución contablemente antes de corregirla.')
+            c.execute("UPDATE invoices SET status='Anulada',notes=concat_ws(E'\\n',notes,%s),updated_at=now() WHERE id=%s",('ANULADA: '+clean(reason),invoice_id)); self.audit(c,a,'anular_cuenta','invoices',invoice_id,{'motivo':reason})
+    def add_cash_movement(self,uid,data):
+        try: amount=Decimal(str(data.get('amount')))
+        except Exception: raise AppError('Revise el valor del movimiento.')
+        kind=data.get('movement_type'); method=data.get('method'); category=clean(data.get('category')); description=clean(data.get('description'))
+        if kind not in ('Ingreso','Egreso') or method not in ('Efectivo','Tarjeta','Transferencia','Cheque','Otro') or amount<=0 or not category or not description: raise AppError('Complete correctamente el movimiento de caja.')
+        with self.tx() as c:
+            a=self.actor(c,uid,['admin','secretaria']); c.execute('''INSERT INTO cash_movements(movement_date,movement_type,category,description,amount,method,reference,created_by)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id''',(parse_date(data.get('movement_date')) or now().date(),kind,category,description,amount,method,clean(data.get('reference')),uid)); mid=c.fetchone()['id']; self.audit(c,a,'movimiento_caja','cash_movements',mid)
+    def cash_movements(self,uid,first,last):
+        with self.tx() as c:
+            self.actor(c,uid,['admin','secretaria']); c.execute('''SELECT m.*,u.name AS usuario,i.number AS cuenta FROM cash_movements m
+                JOIN users u ON u.id=m.created_by LEFT JOIN invoices i ON i.id=m.invoice_id WHERE movement_date BETWEEN %s AND %s ORDER BY movement_date DESC,m.id DESC''',(parse_date(first),parse_date(last))); return c.fetchall()
+    def financial_summary(self,uid,first,last):
+        with self.tx() as c:
+            self.actor(c,uid,['admin','secretaria']); c.execute('''SELECT
+                COALESCE(SUM(i.total) FILTER(WHERE i.status<>'Anulada'),0) AS billed,
+                COALESCE(SUM(i.total-COALESCE(p.paid,0)) FILTER(WHERE i.status<>'Anulada'),0) AS pending,
+                COALESCE(SUM(i.agreement_responsibility) FILTER(WHERE i.status<>'Anulada'),0) AS agreements
+                FROM invoices i LEFT JOIN (SELECT invoice_id,SUM(amount) AS paid FROM payments GROUP BY invoice_id) p ON p.invoice_id=i.id
+                WHERE i.issue_date BETWEEN %s AND %s''',(parse_date(first),parse_date(last))); totals=c.fetchone()
+            c.execute("SELECT COALESCE(SUM(amount),0) AS collected FROM payments WHERE payment_date BETWEEN %s AND %s",(parse_date(first),parse_date(last))); totals['collected']=c.fetchone()['collected']
+            c.execute("SELECT COALESCE(SUM(amount),0) AS expenses FROM cash_movements WHERE movement_date BETWEEN %s AND %s AND movement_type='Egreso'",(parse_date(first),parse_date(last))); totals['expenses']=c.fetchone()['expenses']; return totals
     def export_event(self,uid,entity,entity_id=None,clinical=False):
         with self.tx() as c:
             a=self.actor(c,uid,['admin','medico'] if clinical else ['admin','secretaria','medico'])
@@ -581,7 +729,7 @@ class Database:
             payload={}
             for table in BACKUP_TABLES:
                 c.execute(sql.SQL('SELECT * FROM {}').format(sql.Identifier(table))); payload[table]=[dict(r) for r in c.fetchall()]
-        raw=json.dumps({'version':6,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
+        raw=json.dumps({'version':7,'created_at':now(),'tables':payload},ensure_ascii=False,default=json_default).encode()
         out=io.BytesIO()
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
             z.writestr('datos.json',raw); z.writestr('sha256.txt',hashlib.sha256(raw).hexdigest())
@@ -592,7 +740,7 @@ class Database:
             raw=z.read('datos.json')
             if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(),z.read('sha256.txt').decode().strip()): raise AppError('El respaldo está dañado.')
         data=json.loads(raw)
-        if data.get('version')!=6 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
+        if data.get('version')!=7 or set(data.get('tables',{}))!=set(BACKUP_TABLES): raise AppError('El respaldo no es compatible con esta versión.')
         with self.tx() as c:
             c.execute('SELECT pg_advisory_xact_lock(861230)')
             for table in BACKUP_TABLES:

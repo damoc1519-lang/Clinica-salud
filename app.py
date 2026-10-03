@@ -8,7 +8,7 @@ import streamlit as st
 from psycopg2.errors import ExclusionViolation, UniqueViolation
 
 from core import Database, AppError, TZ, WEEKDAYS, STATUSES, now, local_datetime, proper_name, normalize_doc
-from exports import word_history, clinical_excel, clinical_pdf, certificate_pdf, certificate_word, excel
+from exports import word_history, clinical_excel, clinical_pdf, certificate_pdf, certificate_word, billing_statement_pdf, excel
 from legacy import preview as legacy_preview, import_legacy, issues as legacy_issues
 
 st.set_page_config(page_title="Medisuport", page_icon="🏥", layout="wide")
@@ -212,8 +212,8 @@ if user['must_change']:
     st.stop()
 
 pages={
- 'admin':['Inicio','Pacientes','Convenios','Agenda','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
- 'secretaria':['Inicio','Pacientes','Convenios','Agenda','Médicos y horarios','Reportes'],
+ 'admin':['Inicio','Pacientes','Convenios','Agenda','Facturación y caja','Historia clínica','Médicos y horarios','Usuarios','Reportes y respaldo','Administración'],
+ 'secretaria':['Inicio','Pacientes','Convenios','Agenda','Facturación y caja','Médicos y horarios','Reportes'],
  'medico':['Inicio','Mis citas','Historia clínica','Certificados médicos','Mi información profesional','Pacientes']
 }[ROLE]
 # Los cambios de página solicitados por una acción se aplican al comienzo del
@@ -808,7 +808,106 @@ def reports_page(full=False):
             if prepared: st.session_state.backup_zip=prepared
         if st.session_state.get('backup_zip'):
             st.download_button("Descargar respaldo recuperable",st.session_state.backup_zip,f"Medisuport_respaldo_{now().strftime('%Y%m%d_%H%M')}.zip","application/zip")
-        st.caption("El respaldo recuperable contiene todas las tablas de la versión 6 y una huella de integridad.")
+        st.caption("El respaldo recuperable contiene todas las tablas de la versión 7 y una huella de integridad.")
+
+def financial_page():
+    st.title("Facturación y caja")
+    st.caption("Control administrativo de tarifas, cuentas por cobrar, cobros y movimientos. Las cuentas internas no reemplazan una factura electrónica autorizada por el SRI.")
+    tab0,tab1,tab2,tab3,tab4=st.tabs(['Resumen','Nueva cuenta','Cuentas y cobros','Servicios y tarifarios','Caja'])
+    month_start=now().date().replace(day=1)
+    with tab0:
+        first,last=st.date_input("Periodo",value=(month_start,now().date()),format='DD/MM/YYYY',key='fin_summary_dates')
+        totals=db.financial_summary(UID,first,last)
+        a,b,c,d=st.columns(4)
+        a.metric("Facturado",f"${totals['billed']:,.2f}")
+        b.metric("Cobrado",f"${totals['collected']:,.2f}")
+        c.metric("Por cobrar",f"${totals['pending']:,.2f}")
+        d.metric("Egresos de caja",f"${totals['expenses']:,.2f}")
+        st.info(f"Del total facturado, ${totals['agreements']:,.2f} corresponde a convenios. El saldo se controla por cuenta y puede pagarse en varios abonos.")
+    with tab1:
+        appointments=db.billable_appointments(UID)
+        services=db.services(UID,True)
+        if not appointments: st.info("No hay citas recientes pendientes de facturar.")
+        elif not services: st.warning("Primero active al menos un servicio en ‘Servicios y tarifarios’.")
+        else:
+            ap_labels={f"{fmt_dt(r['start_at'])} · {proper_name(r['patient'])} · {r.get('agreement') or 'Particular'} · {proper_name(r['doctor'])}":r for r in appointments}
+            ap=ap_labels[st.selectbox("Cita a facturar",ap_labels,key='bill_appointment')]
+            st.caption(f"Paciente: {proper_name(ap['patient'])} · Documento: {ap['document']} · Responsable: {ap.get('agreement') or 'Paciente particular'}")
+            svc_labels={f"{s['code']} · {s['name']}":s for s in services}
+            selected=st.multiselect("Servicios prestados",list(svc_labels),key='bill_services')
+            tariffs={t['service_id']:t for t in db.tariffs(UID,ap['agreement_id'])} if ap.get('agreement_id') else {}
+            items=[]; estimate=0.0
+            for label in selected:
+                svc=svc_labels[label]; tariff=tariffs.get(svc['id']); unit=float(tariff['agreed_price'] if tariff else svc['base_price'])
+                c1,c2,c3=st.columns([3,1,1])
+                c1.write(f"**{svc['name']}**  \\Tarifa aplicada: ${unit:,.2f}")
+                qty=c2.number_input("Cantidad",min_value=0.01,value=1.0,step=1.0,key=f"qty_{svc['id']}")
+                discount=c3.number_input("Descuento",min_value=0.0,value=0.0,step=1.0,key=f"disc_{svc['id']}")
+                items.append({'service_id':svc['id'],'quantity':qty,'discount':discount}); estimate+=max(0,unit*qty-discount)
+            due=st.date_input("Fecha de vencimiento",value=now().date(),format='DD/MM/YYYY',key='bill_due')
+            notes=st.text_area("Observaciones de la cuenta",key='bill_notes')
+            st.metric("Total estimado antes de impuestos",f"${estimate:,.2f}")
+            if st.button("Emitir cuenta interna",type='primary',disabled=not items,key='create_invoice'):
+                created=run(lambda:db.create_invoice(UID,ap['id'],items,due,notes),"Cuenta emitida correctamente.",False)
+                if created: st.session_state.selected_invoice=created; st.rerun()
+    with tab2:
+        c1,c2=st.columns([2,1]); period=c1.date_input("Periodo de emisión",value=(month_start,now().date()),format='DD/MM/YYYY',key='invoice_dates'); status=c2.selectbox("Estado",['Todos','Emitida','Parcial','Pagada','Anulada'],key='invoice_status')
+        rows=db.invoices(UID,period[0],period[1],status)
+        if not rows: st.info("No hay cuentas en el periodo seleccionado.")
+        else:
+            table=[{'Cuenta':r['number'],'Fecha':r['issue_date'],'Paciente':proper_name(r['patient']),'Convenio':r.get('agreement') or 'Particular','Total':float(r['total']),'Cobrado':float(r['paid']),'Saldo':float(r['balance']),'Estado':r['status']} for r in rows]
+            st.dataframe(pd.DataFrame(table),hide_index=True,use_container_width=True)
+            labels={f"{r['number']} · {proper_name(r['patient'])} · saldo ${r['balance']:,.2f}":r for r in rows}
+            chosen=labels[st.selectbox("Abrir cuenta",labels,key='invoice_open')]
+            inv=db.invoice_detail(UID,chosen['id'])
+            st.subheader(f"{inv['number']} · {proper_name(inv['patient'])}")
+            st.caption(f"Convenio: {inv.get('agreement') or 'Particular'} · Paciente: ${inv['patient_responsibility']:,.2f} · Convenio: ${inv['agreement_responsibility']:,.2f}")
+            st.dataframe(pd.DataFrame([{'Servicio':x['description'],'Cantidad':float(x['quantity']),'Precio':float(x['unit_price']),'Descuento':float(x['discount']),'Impuesto':float(x['tax']),'Total':float(x['total'])} for x in inv['items']]),hide_index=True,use_container_width=True)
+            st.download_button("Descargar estado de cuenta PDF",billing_statement_pdf(inv),f"{inv['number']}.pdf","application/pdf",key='invoice_pdf')
+            balance=inv['total']-inv['paid']
+            if balance>0 and inv['status']!='Anulada':
+                with st.form('payment_form'):
+                    p1,p2,p3=st.columns(3); pay_date=p1.date_input("Fecha",value=now().date(),format='DD/MM/YYYY'); amount=p2.number_input("Valor",min_value=0.01,max_value=float(balance),value=float(balance),step=1.0); method=p3.selectbox("Método",['Efectivo','Tarjeta','Transferencia','Cheque','Otro'])
+                    reference=st.text_input("Referencia"); pay_notes=st.text_input("Nota")
+                    if st.form_submit_button("Registrar cobro",type='primary'): run(lambda:db.add_payment(UID,inv['id'],amount,method,reference,pay_notes,pay_date),"Cobro registrado.")
+            if inv['payments']:
+                st.write("**Abonos registrados**"); st.dataframe(pd.DataFrame([{'Fecha':p['payment_date'],'Valor':float(p['amount']),'Método':p['method'],'Referencia':p['reference']} for p in inv['payments']]),hide_index=True,use_container_width=True)
+            if ROLE=='admin' and inv['status'] not in ('Anulada','Pagada'):
+                with st.expander("Anular esta cuenta"):
+                    reason=st.text_input("Motivo de anulación",key='annul_reason')
+                    if st.button("Anular cuenta",disabled=len(reason.strip())<5,key='annul_invoice'): run(lambda:db.annul_invoice(UID,inv['id'],reason),"Cuenta anulada.")
+            st.download_button("Descargar cuentas del periodo en Excel",excel({'Cuentas':table}),f"Cuentas_{period[0]}_{period[1]}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key='invoice_excel')
+    with tab3:
+        services=db.services(UID)
+        if ROLE=='admin':
+            labels={'Nuevo servicio':None}|{f"{s['code']} · {s['name']}":s for s in services}; selected=labels[st.selectbox("Crear o editar servicio",labels,key='service_edit')]
+            with st.form('service_form'):
+                a,b,c=st.columns(3); code=a.text_input("Código *",value=(selected or {}).get('code','')); name=b.text_input("Nombre *",value=(selected or {}).get('name','')); category=c.selectbox("Categoría",['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'],index=['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'].index((selected or {}).get('category','Consulta')) if (selected or {}).get('category','Consulta') in ['Consulta','Procedimiento','Laboratorio','Imagen','Insumo','Otro'] else 5)
+                d,e,f=st.columns(3); price=d.number_input("Precio particular",min_value=0.0,value=float((selected or {}).get('base_price',0)),step=1.0); tax=e.number_input("Impuesto %",min_value=0.0,max_value=100.0,value=float((selected or {}).get('tax_rate',0)),step=1.0); active=f.checkbox("Activo",value=(selected or {}).get('active',True))
+                if st.form_submit_button("Guardar servicio",type='primary'): run(lambda:db.save_service(UID,{'code':code,'name':name,'category':category,'base_price':price,'tax_rate':tax,'active':active},(selected or {}).get('id'),(selected or {}).get('version')),"Servicio guardado.")
+            active_agreements=db.agreements(UID,True); active_services=[s for s in services if s['active']]
+            if active_agreements and active_services:
+                st.subheader("Tarifa por convenio")
+                amap={a['name']:a for a in active_agreements}; smap={f"{s['code']} · {s['name']}":s for s in active_services}
+                with st.form('tariff_form'):
+                    agreement=amap[st.selectbox("Convenio",amap)]; service=smap[st.selectbox("Servicio",smap)]; existing=next((t for t in db.tariffs(UID,agreement['id']) if t['service_id']==service['id']),None)
+                    x,y=st.columns(2); agreed=x.number_input("Tarifa acordada",min_value=0.0,value=float((existing or {}).get('agreed_price',service['base_price'])),step=1.0); copay=y.number_input("Copago del paciente",min_value=0.0,value=float((existing or {}).get('patient_copay',0)),step=1.0)
+                    if st.form_submit_button("Guardar tarifa"): run(lambda:db.save_tariff(UID,agreement['id'],service['id'],agreed,copay),"Tarifa guardada.")
+        tariffs=db.tariffs(UID)
+        if tariffs: st.dataframe(pd.DataFrame([{'Convenio':t['agreement'],'Código':t['code'],'Servicio':t['service'],'Tarifa':float(t['agreed_price']),'Copago':float(t['patient_copay']),'Activo':t['active']} for t in tariffs]),hide_index=True,use_container_width=True)
+    with tab4:
+        first,last=st.date_input("Periodo de caja",value=(month_start,now().date()),format='DD/MM/YYYY',key='cash_dates')
+        with st.form('cash_form'):
+            a,b,c=st.columns(3); movement_date=a.date_input("Fecha",value=now().date(),format='DD/MM/YYYY'); kind=b.selectbox("Tipo",['Egreso','Ingreso']); method=c.selectbox("Método",['Efectivo','Tarjeta','Transferencia','Cheque','Otro'])
+            d,e=st.columns(2); category=d.text_input("Categoría",placeholder="Ej.: insumos, arriendo, otro ingreso"); amount=e.number_input("Valor",min_value=0.01,value=1.0,step=1.0)
+            description=st.text_input("Descripción"); reference=st.text_input("Referencia")
+            if st.form_submit_button("Registrar movimiento",type='primary'): run(lambda:db.add_cash_movement(UID,{'movement_date':movement_date,'movement_type':kind,'category':category,'description':description,'amount':amount,'method':method,'reference':reference}),"Movimiento registrado.")
+        movements=db.cash_movements(UID,first,last)
+        cash_rows=[{'Fecha':m['movement_date'],'Tipo':m['movement_type'],'Categoría':m['category'],'Descripción':m['description'],'Valor':float(m['amount']),'Método':m['method'],'Cuenta':m.get('cuenta') or '','Usuario':proper_name(m['usuario'])} for m in movements]
+        if cash_rows:
+            st.dataframe(pd.DataFrame(cash_rows),hide_index=True,use_container_width=True)
+            st.download_button("Descargar caja en Excel",excel({'Caja':cash_rows}),f"Caja_{first}_{last}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key='cash_excel')
+        else: st.info("No hay movimientos de caja en este periodo.")
 
 def admin_page():
     st.title("Administración")
@@ -829,6 +928,6 @@ def admin_page():
         logs=db.audit_rows(UID); st.dataframe(pd.DataFrame(logs),hide_index=True,use_container_width=True)
 
 try:
-    {'Inicio':dashboard,'Pacientes':patients_page,'Convenios':agreements_page,'Agenda':agenda_page,'Mis citas':lambda:agenda_page(True),'Historia clínica':history_page,
+    {'Inicio':dashboard,'Pacientes':patients_page,'Convenios':agreements_page,'Agenda':agenda_page,'Facturación y caja':financial_page,'Mis citas':lambda:agenda_page(True),'Historia clínica':history_page,
      'Certificados médicos':certificates_page,'Mi información profesional':professional_profile_page,'Médicos y horarios':doctors_page,'Usuarios':users_page,'Reportes':reports_page,'Reportes y respaldo':lambda:reports_page(True),'Administración':admin_page}[page]()
 except Exception as exc: fail(exc)

@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 INSERT INTO settings VALUES ('schema_version','2'),('consultation_rule','specialty')
  ON CONFLICT DO NOTHING;
-UPDATE settings SET value='6' WHERE key='schema_version';
+UPDATE settings SET value='7' WHERE key='schema_version';
 CREATE TABLE IF NOT EXISTS doctors (
  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  specialties TEXT[] NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -121,6 +121,67 @@ CREATE TABLE IF NOT EXISTS certificates (
 );
 CREATE INDEX IF NOT EXISTS certificate_patient_idx ON certificates(patient_id,issued_at DESC);
 CREATE INDEX IF NOT EXISTS certificate_doctor_idx ON certificates(doctor_id,issued_at DESC);
+-- Módulo financiero administrativo. Estas cuentas internas no sustituyen al
+-- comprobante electrónico autorizado por el SRI.
+CREATE TABLE IF NOT EXISTS services (
+ id BIGSERIAL PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+ category TEXT NOT NULL DEFAULT 'Consulta', base_price NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK(base_price>=0),
+ tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK(tax_rate BETWEEN 0 AND 100),
+ active BOOLEAN NOT NULL DEFAULT TRUE, version INT NOT NULL DEFAULT 1,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO services(code,name,category,base_price,tax_rate)
+ VALUES('CONS-GEN','Consulta médica general','Consulta',0,0)
+ ON CONFLICT(code) DO NOTHING;
+CREATE TABLE IF NOT EXISTS agreement_tariffs (
+ agreement_id BIGINT NOT NULL REFERENCES agreements(id),
+ service_id BIGINT NOT NULL REFERENCES services(id),
+ agreed_price NUMERIC(12,2) NOT NULL CHECK(agreed_price>=0),
+ patient_copay NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK(patient_copay>=0),
+ active BOOLEAN NOT NULL DEFAULT TRUE, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ PRIMARY KEY(agreement_id,service_id)
+);
+CREATE TABLE IF NOT EXISTS invoices (
+ id BIGSERIAL PRIMARY KEY, number TEXT UNIQUE,
+ appointment_id BIGINT UNIQUE REFERENCES appointments(id),
+ patient_id BIGINT NOT NULL REFERENCES patients(id),
+ agreement_id BIGINT REFERENCES agreements(id),
+ issue_date DATE NOT NULL DEFAULT CURRENT_DATE, due_date DATE NOT NULL DEFAULT CURRENT_DATE,
+ status TEXT NOT NULL DEFAULT 'Emitida' CHECK(status IN ('Emitida','Parcial','Pagada','Anulada')),
+ subtotal NUMERIC(12,2) NOT NULL DEFAULT 0, discount NUMERIC(12,2) NOT NULL DEFAULT 0,
+ tax NUMERIC(12,2) NOT NULL DEFAULT 0, total NUMERIC(12,2) NOT NULL CHECK(total>=0),
+ patient_responsibility NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK(patient_responsibility>=0),
+ agreement_responsibility NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK(agreement_responsibility>=0),
+ notes TEXT, created_by BIGINT NOT NULL REFERENCES users(id),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS invoice_date_idx ON invoices(issue_date,status);
+CREATE INDEX IF NOT EXISTS invoice_agreement_idx ON invoices(agreement_id,issue_date);
+CREATE TABLE IF NOT EXISTS invoice_items (
+ id BIGSERIAL PRIMARY KEY, invoice_id BIGINT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+ service_id BIGINT REFERENCES services(id), description TEXT NOT NULL,
+ quantity NUMERIC(10,2) NOT NULL CHECK(quantity>0), unit_price NUMERIC(12,2) NOT NULL CHECK(unit_price>=0),
+ discount NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK(discount>=0), tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0,
+ subtotal NUMERIC(12,2) NOT NULL, tax NUMERIC(12,2) NOT NULL, total NUMERIC(12,2) NOT NULL
+);
+CREATE TABLE IF NOT EXISTS payments (
+ id BIGSERIAL PRIMARY KEY, invoice_id BIGINT NOT NULL REFERENCES invoices(id),
+ payment_date DATE NOT NULL DEFAULT CURRENT_DATE, amount NUMERIC(12,2) NOT NULL CHECK(amount>0),
+ method TEXT NOT NULL CHECK(method IN ('Efectivo','Tarjeta','Transferencia','Cheque','Otro')),
+ reference TEXT, notes TEXT, received_by BIGINT NOT NULL REFERENCES users(id),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS payment_invoice_idx ON payments(invoice_id,payment_date);
+CREATE TABLE IF NOT EXISTS cash_movements (
+ id BIGSERIAL PRIMARY KEY, movement_date DATE NOT NULL DEFAULT CURRENT_DATE,
+ movement_type TEXT NOT NULL CHECK(movement_type IN ('Ingreso','Egreso')),
+ category TEXT NOT NULL, description TEXT NOT NULL,
+ amount NUMERIC(12,2) NOT NULL CHECK(amount>0),
+ method TEXT NOT NULL CHECK(method IN ('Efectivo','Tarjeta','Transferencia','Cheque','Otro')),
+ reference TEXT, invoice_id BIGINT REFERENCES invoices(id), created_by BIGINT NOT NULL REFERENCES users(id),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS cash_date_idx ON cash_movements(movement_date,movement_type);
 CREATE TABLE IF NOT EXISTS audit (
  id BIGSERIAL PRIMARY KEY, actor_id BIGINT REFERENCES users(id), action TEXT NOT NULL,
  entity TEXT NOT NULL, entity_id TEXT, detail JSONB NOT NULL DEFAULT '{}',
