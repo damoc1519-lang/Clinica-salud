@@ -200,8 +200,22 @@ except Exception as exc:
 UID=user['id']; ROLE=user['role']; DOCTOR=user['doctor_id']
 brand=db.branding(UID)
 st.markdown(f"""<style>
-:root{{--med-primary:{brand['primary']};--med-primary-2:{brand['secondary']};--med-accent:{brand['secondary']};}}
+:root{{--med-primary:{brand['primary']};--med-primary-2:{brand['secondary']};--med-accent:{brand['secondary']};--med-bg:{brand['background']};--med-surface:{brand['surface']};--med-text:{brand['text']};--med-muted:{brand['muted']};--med-border:{brand['border']};}}
+[data-testid="stAppViewContainer"],.stApp{{background:{brand['background']}!important;color:{brand['text']}!important}}
+[data-testid="stMainBlockContainer"],main{{color:{brand['text']}!important}}
+h1,h2,h3,h4,h5,h6{{color:{brand['primary']}!important}}
+p,label,.stMarkdown,.stCaption,[data-testid="stWidgetLabel"]{{color:{brand['text']}!important}}
+.stCaption,[data-testid="stCaptionContainer"]{{color:{brand['muted']}!important}}
 [data-testid="stSidebar"]{{background:linear-gradient(180deg,{brand['primary']} 0%,{brand['secondary']} 140%)!important}}
+[data-testid="stSidebar"] *{{color:{brand['sidebar_text']}!important}}
+[data-testid="stForm"],[data-testid="stMetric"],[data-testid="stExpander"],div[data-testid="stVerticalBlockBorderWrapper"]{{background:{brand['surface']}!important;border-color:{brand['border']}!important;color:{brand['text']}!important}}
+div[data-baseweb="input"]>div,div[data-baseweb="select"]>div,div[data-baseweb="textarea"]>div,textarea,input{{background:{brand['input']}!important;color:{brand['text']}!important;border-color:{brand['border']}!important;-webkit-text-fill-color:{brand['text']}!important}}
+[data-baseweb="popover"],[role="listbox"],[role="option"]{{background:{brand['surface']}!important;color:{brand['text']}!important}}
+.stTabs [data-baseweb="tab-list"]{{background:{brand['border']}!important}}
+.stTabs [aria-selected="true"]{{background:{brand['surface']}!important;color:{brand['primary']}!important}}
+.stButton>button,.stDownloadButton>button{{background:{brand['surface']}!important;color:{brand['primary']}!important;border-color:{brand['border']}!important}}
+button[kind="primary"]{{background:linear-gradient(135deg,{brand['primary']},{brand['secondary']})!important;color:#FFFFFF!important}}
+[data-testid="stDataFrame"],iframe{{border-color:{brand['border']}!important;background:{brand['surface']}!important}}
 </style>""",unsafe_allow_html=True)
 
 if user['must_change']:
@@ -975,17 +989,31 @@ def admin_page():
         if st.button("Guardar regla"): run(lambda:db.settings(UID,choice),"Regla guardada.")
     with tab3:
         st.subheader("Logo y colores de la clínica")
-        st.caption("Estos cambios modifican únicamente la apariencia. No alteran pacientes, citas ni historias clínicas.")
+        st.caption("Puede controlar todos los colores visibles. Estos cambios no alteran pacientes, citas ni historias clínicas.")
         with st.form('branding_form'):
             clinic_name=st.text_input("Nombre de la clínica",value=brand['name'])
+            st.write("**Colores institucionales y botones**")
             x,y=st.columns(2); primary=x.color_picker("Color principal",value=brand['primary']); secondary=y.color_picker("Color secundario",value=brand['secondary'])
+            st.write("**Página, tarjetas y campos**")
+            x,y,z=st.columns(3); background=x.color_picker("Fondo de la página",value=brand['background']); surface=y.color_picker("Tarjetas y recuadros",value=brand['surface']); input_color=z.color_picker("Campos de escritura",value=brand['input'])
+            st.write("**Textos y separaciones**")
+            x,y,z=st.columns(3); text_color=x.color_picker("Texto principal",value=brand['text']); muted=y.color_picker("Texto secundario",value=brand['muted']); border=z.color_picker("Bordes y divisiones",value=brand['border'])
+            sidebar_text=st.color_picker("Texto del menú lateral",value=brand['sidebar_text'])
             logo_file=st.file_uploader("Cambiar logo",type=['png','jpg','jpeg'],help="Si no selecciona una imagen se conserva el logo actual.")
             if st.form_submit_button("Guardar personalización",type='primary'):
                 logo=''
                 if logo_file:
                     if logo_file.size>1_000_000: st.error("Use una imagen menor a 1 MB.")
                     else: logo=base64.b64encode(logo_file.getvalue()).decode()
-                if not logo_file or logo: run(lambda:db.save_branding(UID,clinic_name,primary,secondary,logo),"Personalización guardada.")
+                colors={'primary':primary,'secondary':secondary,'background':background,'surface':surface,'text':text_color,'muted':muted,'border':border,'input':input_color,'sidebar_text':sidebar_text}
+                if not logo_file or logo: run(lambda:db.save_branding(UID,clinic_name,colors,logo),"Personalización guardada.")
+        st.markdown(f"""<div style="background:{brand['background']};border:2px solid {brand['border']};border-radius:14px;padding:16px;color:{brand['text']}">
+        <b style="color:{brand['primary']}">Vista previa actual</b><br><span style="color:{brand['muted']}">Texto secundario y explicaciones</span>
+        <div style="margin-top:10px;background:{brand['surface']};border:1px solid {brand['border']};padding:12px;border-radius:10px">Tarjeta o recuadro visible
+        <div style="margin-top:8px;background:{brand['input']};border:1px solid {brand['border']};padding:8px;border-radius:8px">Campo de escritura</div></div></div>""",unsafe_allow_html=True)
+        defaults={'primary':'#001F5B','secondary':'#008BC4','background':'#F3F7FA','surface':'#FFFFFF','text':'#17313A','muted':'#506670','border':'#DCE7EC','input':'#FBFDFE','sidebar_text':'#F4FBFC'}
+        if st.button("Restaurar colores recomendados",key='reset_brand_colors'):
+            run(lambda:db.save_branding(UID,clinic_name if 'clinic_name' in locals() else brand['name'],defaults,''),"Colores recomendados restaurados.")
     with tab4:
         logs=db.audit_rows(UID); st.dataframe(pd.DataFrame(logs),hide_index=True,use_container_width=True)
 

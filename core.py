@@ -764,15 +764,21 @@ class Database:
             return {'Resumen':summary,'Cuentas':accounts,'Detalle servicios':details,'Cobros':payments,'Caja':cash}
     def branding(self,uid):
         with self.tx() as c:
-            self.actor(c,uid); c.execute("SELECT key,value FROM settings WHERE key IN ('brand_name','brand_primary','brand_secondary','brand_logo')")
+            self.actor(c,uid); c.execute("SELECT key,value FROM settings WHERE key LIKE 'brand_%'")
             values={r['key']:r['value'] for r in c.fetchall()}
-            return {'name':values.get('brand_name','Quito Medical Center'),'primary':values.get('brand_primary','#001F5B'),'secondary':values.get('brand_secondary','#008BC4'),'logo':values.get('brand_logo','')}
-    def save_branding(self,uid,name,primary,secondary,logo=''):
+            return {'name':values.get('brand_name','Quito Medical Center'),'primary':values.get('brand_primary','#001F5B'),
+                    'secondary':values.get('brand_secondary','#008BC4'),'background':values.get('brand_background','#F3F7FA'),
+                    'surface':values.get('brand_surface','#FFFFFF'),'text':values.get('brand_text','#17313A'),
+                    'muted':values.get('brand_muted','#506670'),'border':values.get('brand_border','#DCE7EC'),
+                    'input':values.get('brand_input','#FBFDFE'),'sidebar_text':values.get('brand_sidebar_text','#F4FBFC'),
+                    'logo':values.get('brand_logo','')}
+    def save_branding(self,uid,name,colors,logo=''):
         if not clean(name): raise AppError('Ingrese el nombre de la clínica.')
-        if not re.fullmatch(r'#[0-9A-Fa-f]{6}',primary) or not re.fullmatch(r'#[0-9A-Fa-f]{6}',secondary): raise AppError('Revise los colores seleccionados.')
+        allowed={'primary','secondary','background','surface','text','muted','border','input','sidebar_text'}
+        if set(colors)!=allowed or any(not re.fullmatch(r'#[0-9A-Fa-f]{6}',value) for value in colors.values()): raise AppError('Revise los colores seleccionados.')
         if logo and len(logo)>2_000_000: raise AppError('El logo es demasiado grande. Use una imagen menor a 1 MB.')
         with self.tx() as c:
-            a=self.actor(c,uid,['admin']); values={'brand_name':clean(name),'brand_primary':primary,'brand_secondary':secondary}
+            a=self.actor(c,uid,['admin']); values={'brand_name':clean(name),**{'brand_'+key:value for key,value in colors.items()}}
             if logo: values['brand_logo']=logo
             for key,value in values.items(): c.execute('INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',(key,value))
             self.audit(c,a,'personalizar_clinica','settings')

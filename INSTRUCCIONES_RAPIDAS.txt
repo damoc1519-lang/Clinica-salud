@@ -29,6 +29,9 @@ conserva únicamente la cuenta administrativa y el catálogo general de servicio
     resumen, cuentas, detalle, cobros y movimientos de caja.
 14. Las cuentas, cobros y caja son control administrativo interno. Todavía no
     son facturas electrónicas tributarias autorizadas por el SRI.
+15. En Administración > Personalización puede modificar todos los colores de
+    la interfaz. Si algún recuadro deja de verse, pulse “Restaurar colores
+    recomendados”.
 
 Las tablas anteriores se conservan. La versión nueva trabaja dentro del esquema
 medisuport de Supabase.

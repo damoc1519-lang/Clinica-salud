@@ -26,6 +26,8 @@ de cada clínica, firma electrónica, numeración, XML y transmisión/autorizaci
 - Acceso del administrador a Mis citas, atención clínica y certificados.
 - Logo QMC y colores institucionales configurables desde Administración.
 - Mensajes visibles de confirmación después de guardar o registrar.
+- Editor visual completo: página, tarjetas, campos, textos, bordes, menú y botones.
+- Vista previa de colores y restauración de la combinación recomendada.
 
 ## Instalación en Codespaces
 
